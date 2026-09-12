@@ -56,7 +56,11 @@ jobs:
       - run: uv python install 3.12
       - run: uv sync --extra postgres
       - name: Tests
-        run: uv run pytest -v
+        # Offline tiers only. The integration tier has its own job with a
+        # Postgres service; collecting it here would hit the conftest guard that
+        # turns a CI skip into a failure — correctly, since there is no database
+        # in this job.
+        run: uv run pytest tests/unit tests/contract -v
 
   # The durable tier needs a real Postgres: multi-process compare-and-set,
   # transactional rollback of partial quota reservations, and column-level GRANTs

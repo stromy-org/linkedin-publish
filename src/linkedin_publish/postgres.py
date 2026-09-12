@@ -27,6 +27,7 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from ._json import loads_object
 from .exceptions import DependencyError
 from .limits import BudgetKey, QuotaExhausted
 from .store import (
@@ -149,6 +150,15 @@ async def check_compatible(pool: asyncpg.Pool) -> None:
 
 
 def _as_record(row: Any) -> PublicationRecord:
+    # asyncpg hands back `jsonb` as a STRING unless a type codec is registered,
+    # so `draft` arrives as raw JSON text and Pydantic rejects it outright. Decode
+    # explicitly rather than installing a global codec: the conversion is visible
+    # at the one place it matters, instead of being ambient pool state a reader
+    # has to go looking for. Caught by the integration tier on its first run.
+    draft = row["draft"]
+    if isinstance(draft, (str, bytes)):
+        draft = loads_object(draft)
+
     return PublicationRecord.model_validate(
         {
             "publication_id": row["publication_id"],
@@ -161,7 +171,7 @@ def _as_record(row: Any) -> PublicationRecord:
             },
             "binding_id": row["binding_id"],
             "payload_digest": row["payload_digest"],
-            "draft": row["draft"],
+            "draft": draft,
             "state": row["state"],
             "scheduled_at": row["scheduled_at"],
             "expires_at": row["expires_at"],
