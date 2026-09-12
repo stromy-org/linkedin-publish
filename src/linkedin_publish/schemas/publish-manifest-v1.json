@@ -1,0 +1,294 @@
+{
+  "$defs": {
+    "ArticleDraft": {
+      "additionalProperties": false,
+      "description": "A link preview. The URL is what LinkedIn renders, not a redirect we own.",
+      "properties": {
+        "description": {
+          "anyOf": [
+            {
+              "maxLength": 4086,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Description"
+        },
+        "kind": {
+          "const": "article",
+          "default": "article",
+          "title": "Kind",
+          "type": "string"
+        },
+        "thumbnail": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/MediaRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "title": {
+          "anyOf": [
+            {
+              "maxLength": 400,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Title"
+        },
+        "url": {
+          "format": "uri",
+          "maxLength": 2083,
+          "minLength": 1,
+          "title": "Url",
+          "type": "string"
+        }
+      },
+      "required": [
+        "url"
+      ],
+      "title": "ArticleDraft",
+      "type": "object"
+    },
+    "DocumentDraft": {
+      "additionalProperties": false,
+      "description": "A PDF document post.\n\nThis is the *only* representation of an editorial \"carousel\". LinkedIn's\nCarousel API is a sponsored-content surface this library does not implement,\nso a carousel either arrives as an approved PDF here or is refused by name \u2014\nit never degrades into a text-only post.",
+      "properties": {
+        "asset": {
+          "$ref": "#/$defs/MediaRef"
+        },
+        "kind": {
+          "const": "document",
+          "default": "document",
+          "title": "Kind",
+          "type": "string"
+        },
+        "title": {
+          "maxLength": 100,
+          "minLength": 1,
+          "title": "Title",
+          "type": "string"
+        }
+      },
+      "required": [
+        "asset",
+        "title"
+      ],
+      "title": "DocumentDraft",
+      "type": "object"
+    },
+    "ImageDraft": {
+      "additionalProperties": false,
+      "description": "A single image attached to a post.",
+      "properties": {
+        "alt_text": {
+          "anyOf": [
+            {
+              "maxLength": 300,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Alt Text"
+        },
+        "asset": {
+          "$ref": "#/$defs/MediaRef"
+        },
+        "kind": {
+          "const": "image",
+          "default": "image",
+          "title": "Kind",
+          "type": "string"
+        }
+      },
+      "required": [
+        "asset"
+      ],
+      "title": "ImageDraft",
+      "type": "object"
+    },
+    "ManifestEntry": {
+      "additionalProperties": false,
+      "description": "One publication, exactly as it will be submitted.",
+      "properties": {
+        "author_urn": {
+          "title": "Author Urn",
+          "type": "string"
+        },
+        "binding_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Binding Id",
+          "type": "string"
+        },
+        "commentary": {
+          "title": "Commentary",
+          "type": "string"
+        },
+        "expires_at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Expires At"
+        },
+        "media": {
+          "anyOf": [
+            {
+              "discriminator": {
+                "mapping": {
+                  "article": "#/$defs/ArticleDraft",
+                  "document": "#/$defs/DocumentDraft",
+                  "image": "#/$defs/ImageDraft"
+                },
+                "propertyName": "kind"
+              },
+              "oneOf": [
+                {
+                  "$ref": "#/$defs/ImageDraft"
+                },
+                {
+                  "$ref": "#/$defs/ArticleDraft"
+                },
+                {
+                  "$ref": "#/$defs/DocumentDraft"
+                }
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Media"
+        },
+        "post_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Post Id",
+          "type": "string"
+        },
+        "scheduled_at": {
+          "format": "date-time",
+          "title": "Scheduled At",
+          "type": "string"
+        },
+        "timezone": {
+          "maxLength": 64,
+          "minLength": 1,
+          "title": "Timezone",
+          "type": "string"
+        },
+        "visibility": {
+          "default": "PUBLIC",
+          "enum": [
+            "PUBLIC",
+            "CONNECTIONS"
+          ],
+          "title": "Visibility",
+          "type": "string"
+        }
+      },
+      "required": [
+        "post_id",
+        "binding_id",
+        "author_urn",
+        "commentary",
+        "scheduled_at",
+        "timezone"
+      ],
+      "title": "ManifestEntry",
+      "type": "object"
+    },
+    "MediaRef": {
+      "additionalProperties": false,
+      "description": "A handle to bytes that already exist in the org asset store.\n\nA SHA-256 is an *identifier*, not an authorization: `media.py` still asks the\ninjected asset reader whether this subject may read it. Hosted tools accept\nthis shape only \u2014 never a local path, a download URL, or inline base64.",
+      "properties": {
+        "filename": {
+          "anyOf": [
+            {
+              "maxLength": 255,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Filename"
+        },
+        "sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Sha256",
+          "type": "string"
+        }
+      },
+      "required": [
+        "sha256"
+      ],
+      "title": "MediaRef",
+      "type": "object"
+    }
+  },
+  "$id": "https://github.com/stromy-org/linkedin-publish/schemas/publish-manifest-v1.json",
+  "additionalProperties": false,
+  "description": "A reviewed batch. Unapproved until the trusted writer says otherwise.",
+  "properties": {
+    "campaign_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "title": "Campaign Id",
+      "type": "string"
+    },
+    "publications": {
+      "items": {
+        "$ref": "#/$defs/ManifestEntry"
+      },
+      "minItems": 1,
+      "title": "Publications",
+      "type": "array"
+    },
+    "schema_version": {
+      "const": "1.0",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "source_posts_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Source Posts Sha256",
+      "type": "string"
+    }
+  },
+  "required": [
+    "schema_version",
+    "campaign_id",
+    "source_posts_sha256",
+    "publications"
+  ],
+  "title": "Stromy publish manifest v1",
+  "type": "object"
+}

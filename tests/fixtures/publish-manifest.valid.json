@@ -1,0 +1,29 @@
+{
+  "schema_version": "1.0",
+  "campaign_id": "stromy-autumn-2026",
+  "source_posts_sha256": "3a7bd3e2360a3d29eea436fcfb7e44c735d117c42d1c1835420b6b9942dd4f1b",
+  "publications": [
+    {
+      "post_id": "2f6161370339",
+      "binding_id": "bind-william-personal",
+      "author_urn": "urn:li:person:AbC123xyz",
+      "commentary": "Most orchestration failures are not model failures. They are handoff failures: the step that ran twice, the approval nobody recorded, the output that went somewhere nobody checked.\n\nWe build the boring part — the ledger that says what happened, once.\n\nMore: https://stromy.com.au",
+      "visibility": "PUBLIC",
+      "media": null,
+      "scheduled_at": "2026-09-15T07:00:00+02:00",
+      "timezone": "Europe/Brussels",
+      "expires_at": "2026-09-16T07:00:00+02:00"
+    },
+    {
+      "post_id": "8c41de0a1b77",
+      "binding_id": "bind-william-personal",
+      "author_urn": "urn:li:person:AbC123xyz",
+      "commentary": "A short note on why we stopped trying to promise exactly-once delivery to an external API, and started promising something we can actually keep: no automatic replay after an ambiguous send.",
+      "visibility": "PUBLIC",
+      "media": null,
+      "scheduled_at": "2026-09-17T07:00:00+02:00",
+      "timezone": "Europe/Brussels",
+      "expires_at": "2026-09-18T07:00:00+02:00"
+    }
+  ]
+}

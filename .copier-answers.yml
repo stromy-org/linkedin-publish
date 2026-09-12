@@ -1,0 +1,20 @@
+# Copier answers — DO NOT EDIT BY HAND.
+# Run `uvx copier update --skip-answered` to pull template improvements.
+_commit: v0.1.3
+_src_path: gh:stromy-org/python-library-template
+author_email: william.masquelier@stromy.com.au
+author_name: William Masquelier
+cli_command_name: linkedin-publish
+consumer_repos_to_notify: Stromy,linkedin-mcp
+depends_on_internal_libs: false
+description: Official LinkedIn publishing client and durable, approval-gated publication
+    service
+github_owner: stromy-org
+github_repo: linkedin-publish
+has_cli: true
+module_slug: linkedin_publish
+optional_extras: postgres
+package_slug: linkedin-publish
+project_name: LinkedIn Publish
+python_version: '3.12'
+surface_class: full
