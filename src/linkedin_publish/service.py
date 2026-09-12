@@ -148,6 +148,21 @@ class PublicationService:
         self._lease = lease
         self._actor = actor
 
+    @property
+    def store(self) -> PublicationStore:
+        """The ledger this service reads and writes.
+
+        Exposed deliberately: a caller that needs to *read* a record should not
+        have to reach past the service into a private attribute, and a status
+        query is a legitimate read. Every write still goes through the service's
+        own methods, which is where the gates live.
+        """
+        return self._store
+
+    async def get_publication(self, publication_id: str) -> PublicationRecord | None:
+        """Read one record, or None. No gates — reading is not sending."""
+        return await self._store.get_publication(publication_id)
+
     # ---------------------------------------------------------------- ticking
 
     async def publish_due(
