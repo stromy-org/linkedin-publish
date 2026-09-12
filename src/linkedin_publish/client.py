@@ -27,6 +27,7 @@ import httpx
 
 from .adapters import PostAdapter, RestPostsAdapter, ShareUgcAdapter
 from .adapters.base import PublishOutcome
+from .analytics import Granularity, fetch_share_statistics
 from .auth import Credentials
 from .errors import AuthorForbidden, CapabilityUnavailable, QuotaDeferred, ValidationFailure
 from .limits import Endpoint, QuotaLimiter
@@ -34,11 +35,15 @@ from .media import AssetReader, ResolvedAsset, media_kind, sniff_and_validate
 from .models import (
     AccountBinding,
     ArticleDraft,
+    Capability,
+    DeleteOutcome,
     DocumentDraft,
     ImageDraft,
     MediaRef,
     PostDraft,
+    PostSnapshot,
     PublishReceipt,
+    ShareStatistics,
 )
 from .version import API_BASE, LINKEDIN_VERSION
 
@@ -94,6 +99,8 @@ class LinkedInClient:
             follow_redirects=False,
         )
         self._limiter = limiter
+        self._api_base = api_base
+        self._linkedin_version = linkedin_version
         self._ugc = ShareUgcAdapter(self._http, api_base=api_base)
         self._rest = RestPostsAdapter(self._http, api_base=api_base, linkedin_version=linkedin_version)
 
@@ -215,6 +222,107 @@ class LinkedInClient:
             permalink=outcome.permalink,
             adapter=outcome.adapter,
             published_at=moment,
+        )
+
+    async def get_post(
+        self,
+        binding: AccountBinding,
+        credentials: Credentials,
+        post_urn: str,
+        *,
+        now: datetime | None = None,
+    ) -> PostSnapshot:
+        """Read a post back from LinkedIn, if this binding may read at all.
+
+        Gated on the `read_post` capability, checked before the network. The
+        pilot's `w_member_social` is write-only, so for most bindings this raises
+        `capability_unavailable` — which is the honest answer. Returning an empty
+        result instead would read as "the post is gone".
+        """
+        self._require_capability(binding, "read_post")
+        await self._reserve_urn(binding, post_urn, endpoint="read", now=now)
+        return await self.adapter_for(binding).get_post(credentials, post_urn)
+
+    async def delete_post(
+        self,
+        binding: AccountBinding,
+        credentials: Credentials,
+        post_urn: str,
+        *,
+        now: datetime | None = None,
+    ) -> DeleteOutcome:
+        """Delete a post. Raw transport — the caller supplies an authorized target.
+
+        `PublicationService.delete_publication` is the safe entry point: it
+        resolves the URN from this binding's own receipt ledger first, so a URN
+        cannot be passed in from outside and deleted.
+        """
+        self._require_capability(binding, "delete")
+        await self._reserve_urn(binding, post_urn, endpoint="delete", now=now)
+        return await self.adapter_for(binding).delete_post(credentials, post_urn)
+
+    async def share_statistics(
+        self,
+        binding: AccountBinding,
+        credentials: Credentials,
+        organization_urn: str,
+        *,
+        start: datetime,
+        end: datetime,
+        granularity: Granularity = "DAY",
+        now: datetime | None = None,
+    ) -> ShareStatistics:
+        """Organic share statistics for an organization this binding may read.
+
+        Needs `rw_organization_admin` plus an ADMINISTRATOR role — neither of
+        which a successful publish demonstrates, hence its own capability. The
+        organization must also be in the binding's allowlist: a CMA token that
+        happens to reach another Page is not authorization to report on it.
+        """
+        self._require_capability(binding, "share_statistics")
+        if organization_urn not in binding.allowed_organization_urns:
+            raise AuthorForbidden(
+                f"binding {binding.binding_id} is not authorized to read statistics for "
+                f"{organization_urn}"
+            )
+        if binding.adapter != "rest_posts":
+            raise CapabilityUnavailable(
+                "share statistics are a versioned-REST (CMA) surface; the Share product has none",
+                capability="share_statistics",
+            )
+        await self._reserve_urn(binding, binding.author_urn, endpoint="read", now=now)
+        return await fetch_share_statistics(
+            self._http,
+            credentials.access_token,
+            organization_urn,
+            start=start,
+            end=end,
+            granularity=granularity,
+            api_base=self._api_base,
+            linkedin_version=self._linkedin_version,
+            now=now,
+        )
+
+    def _require_capability(self, binding: AccountBinding, capability: Capability) -> None:
+        state = binding.capability_state(capability)
+        if state != "enabled":
+            raise CapabilityUnavailable(
+                f"capability {capability!r} is {state} on binding {binding.binding_id}",
+                capability=capability,
+            )
+
+    async def _reserve_urn(
+        self,
+        binding: AccountBinding,
+        member_urn: str,
+        *,
+        endpoint: Endpoint,
+        now: datetime | None,
+    ) -> None:
+        if self._limiter is None:
+            return
+        await self._limiter.reserve(
+            app_id=binding.app_id, member_urn=member_urn, endpoint=endpoint, now=now
         )
 
     async def _reserve(

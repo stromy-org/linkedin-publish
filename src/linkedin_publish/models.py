@@ -26,6 +26,8 @@ from .urns import AUTHOR_TYPES, REST_MEDIA_TYPES, UGC_MEDIA_TYPES, UrnError, aut
 
 __all__ = [
     "AccountBinding",
+    "DeleteOutcome",
+    "PostSnapshot",
     "Adapter",
     "ArticleDraft",
     "Capability",
@@ -37,6 +39,8 @@ __all__ = [
     "MediaRef",
     "PostDraft",
     "PublishReceipt",
+    "ShareStatistics",
+    "ShareStatisticsPoint",
     "SubjectKind",
     "Visibility",
 ]
@@ -277,3 +281,71 @@ class AccountBinding(_Strict):
         if author_urn == self.author_urn:
             return True
         return author_urn in self.allowed_organization_urns
+
+
+class PostSnapshot(_Strict):
+    """What a provider read returned about one post.
+
+    Deliberately thin. This is not a mirror of LinkedIn's response — the fields
+    here are the ones an operator needs to confirm a post exists and says what
+    they approved. `raw_lifecycle_state` is kept verbatim because its vocabulary
+    differs between the two products and normalising it would lose the
+    distinction.
+    """
+
+    post_urn: str
+    author_urn: str | None = None
+    commentary: str | None = None
+    visibility: str | None = None
+    raw_lifecycle_state: str | None = None
+    permalink: str | None = None
+
+
+class DeleteOutcome(_Strict):
+    """The provider's actual answer to a delete.
+
+    `existed` is tri-state on purpose. A 404 means LinkedIn has no such post
+    *for this credential*, which is not the same as "deleted" — reporting 204 for
+    every 404 would turn "you never had access to it" into "it is gone".
+    """
+
+    post_urn: str
+    deleted: bool
+    existed: bool | None
+    http_status: int
+    reason: str | None = None
+
+
+class ShareStatisticsPoint(_Strict):
+    """Organic statistics for one time bucket.
+
+    Every metric is `int | None`. `None` means the provider did not report it,
+    and `reason` says so — it is never coerced to 0, because a measured zero and
+    an absent metric lead to different conclusions. Negative counts are also
+    preserved verbatim: LinkedIn does emit them (a retraction inside the bucket),
+    and clamping them to zero would silently inflate a report.
+    """
+
+    start: datetime
+    end: datetime
+    impressions: int | None = None
+    unique_impressions: int | None = None
+    clicks: int | None = None
+    likes: int | None = None
+    comments: int | None = None
+    shares: int | None = None
+    engagement: float | None = None
+    reason: str | None = None
+
+
+class ShareStatistics(_Strict):
+    """A bounded organic-statistics read, with its provenance attached."""
+
+    organization_urn: str
+    granularity: Literal["DAY", "MONTH"]
+    start: datetime
+    end: datetime
+    source: str = "organizationalEntityShareStatistics"
+    observed_at: datetime
+    points: tuple[ShareStatisticsPoint, ...] = ()
+    reason: str | None = None

@@ -15,6 +15,7 @@ Two layers, usable independently:
   post is not sent a second time.
 """
 
+from .analytics import Granularity, build_query, fetch_share_statistics
 from .auth import CredentialProvider, Credentials, StaticCredentialProvider, TokenObservation
 from .client import LinkedInClient, PreparedPost
 from .errors import (
@@ -39,11 +40,15 @@ from .models import (
     ArticleDraft,
     Capability,
     CapabilityStatus,
+    DeleteOutcome,
     DocumentDraft,
     ImageDraft,
     MediaRef,
     PostDraft,
+    PostSnapshot,
     PublishReceipt,
+    ShareStatistics,
+    ShareStatisticsPoint,
     Visibility,
 )
 from .service import BindingLoader, PublicationService, TickResult
@@ -61,6 +66,13 @@ from .store import (
 __version__ = "0.1.0"
 
 __all__ = [
+    "fetch_share_statistics",
+    "build_query",
+    "ShareStatisticsPoint",
+    "ShareStatistics",
+    "PostSnapshot",
+    "Granularity",
+    "DeleteOutcome",
     "AccountBinding",
     "Adapter",
     "ApprovalRecord",

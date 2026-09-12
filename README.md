@@ -59,6 +59,7 @@ result = await service.publish_due(binding, campaign_id="...", dry_run=True)
 | `store` | The ledger: records, protocol, in-memory implementation |
 | `service` | Claim → gates → durable `sending` → HTTP → receipt |
 | `limits` | Request budgets and retry policy |
+| `analytics` | Organization share statistics (CMA-gated, bounded windows) |
 | `manifest` | Publish manifest v1 and the canonical digest |
 | `postgres` | The durable store, budgets and migrations (`postgres` extra) |
 

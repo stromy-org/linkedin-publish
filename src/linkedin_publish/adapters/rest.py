@@ -13,14 +13,31 @@ URN or the capability stays unavailable.
 
 from __future__ import annotations
 
+from urllib.parse import quote
+
 import httpx
 
-from .._http import map_write_failure, request_id, response_object, restli_id, write_transport_failure
+from .._http import (
+    map_read_failure,
+    map_write_failure,
+    request_id,
+    response_object,
+    restli_id,
+    write_transport_failure,
+)
 from .._json import as_object
 from ..auth import Credentials
-from ..errors import ProviderRejected, PublishOutcomeUnknown
+from ..errors import ProviderRejected, PublishOutcomeUnknown, TransientReadFailure
 from ..media import AssetReader, ResolvedAsset, check_upload_destination, upload_bytes
-from ..models import Adapter, ArticleDraft, DocumentDraft, ImageDraft, PostDraft
+from ..models import (
+    Adapter,
+    ArticleDraft,
+    DeleteOutcome,
+    DocumentDraft,
+    ImageDraft,
+    PostDraft,
+    PostSnapshot,
+)
 from ..version import (
     API_BASE,
     LINKEDIN_VERSION,
@@ -189,6 +206,79 @@ class RestPostsAdapter:
                 request_id=request_id(response),
             )
         return PublishOutcome(post_urn=post_urn, permalink=permalink_for(post_urn), adapter="rest_posts")
+
+
+    async def get_post(self, credentials: Credentials, post_urn: str) -> PostSnapshot:
+        """Read one post back from the provider.
+
+        A read is safe to retry, so its failures map through `map_read_failure`
+        rather than the write taxonomy. A 403 here means the credential lacks the
+        read permission — reported as such, never as "the post does not exist".
+        """
+        try:
+            response = await self._http.get(
+                self._post_url(post_urn), headers=self._headers(credentials.access_token)
+            )
+        except httpx.HTTPError as exc:
+            raise TransientReadFailure(f"{self.name} get: {type(exc).__name__}") from exc
+
+        if response.status_code >= 400:
+            raise map_read_failure(response, what=f"{self.name} get")
+        return self._snapshot(post_urn, response_object(response))
+
+    async def delete_post(self, credentials: Credentials, post_urn: str) -> DeleteOutcome:
+        """Delete one post and report what the provider actually said.
+
+        A 404 is NOT reported as a successful delete. It means this credential
+        has no such post — which may be because it is already gone, or because it
+        was never visible to this app. Collapsing those into 204 would turn "you
+        never had access" into "it is gone", and an operator would stop looking.
+        """
+        try:
+            response = await self._http.delete(
+                self._post_url(post_urn), headers=self._headers(credentials.access_token)
+            )
+        except httpx.HTTPError as exc:
+            # A delete is a write: an unproven outcome is unknown, never a retry.
+            raise PublishOutcomeUnknown(
+                f"{self.name} delete: transport failure ({type(exc).__name__}); outcome unknown"
+            ) from exc
+
+        if response.status_code in (200, 204):
+            return DeleteOutcome(
+                post_urn=post_urn, deleted=True, existed=True, http_status=response.status_code
+            )
+        if response.status_code == 404:
+            return DeleteOutcome(
+                post_urn=post_urn,
+                deleted=False,
+                existed=False,
+                http_status=404,
+                reason="provider has no such post for this credential — already deleted, or never visible to this app",
+            )
+        raise map_write_failure(response, what=f"{self.name} delete")
+
+
+    def _post_url(self, post_urn: str) -> str:
+        return f"{self._api_base}{REST_POSTS_PATH}/{quote(post_urn, safe='')}"
+
+    def _headers(self, access_token: str) -> dict[str, str]:
+        return rest_headers(access_token, version=self._version)
+
+    @staticmethod
+    def _snapshot(post_urn: str, payload: dict[str, object]) -> PostSnapshot:
+        author = payload.get("author")
+        commentary = payload.get("commentary")
+        visibility = payload.get("visibility")
+        state = payload.get("lifecycleState")
+        return PostSnapshot(
+            post_urn=post_urn,
+            author_urn=author if isinstance(author, str) else None,
+            commentary=commentary if isinstance(commentary, str) else None,
+            visibility=visibility if isinstance(visibility, str) else None,
+            raw_lifecycle_state=state if isinstance(state, str) else None,
+            permalink=permalink_for(post_urn),
+        )
 
 
 def _value(response: httpx.Response) -> dict[str, object]:

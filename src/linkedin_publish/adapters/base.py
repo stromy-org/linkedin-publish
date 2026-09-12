@@ -7,7 +7,7 @@ from typing import Protocol
 
 from ..auth import Credentials
 from ..media import AssetReader, ResolvedAsset
-from ..models import Adapter, PostDraft
+from ..models import Adapter, DeleteOutcome, PostDraft, PostSnapshot
 
 __all__ = ["PostAdapter", "PublishOutcome", "UploadedMedia", "permalink_for"]
 
@@ -65,3 +65,7 @@ class PostAdapter(Protocol):
         draft: PostDraft,
         media_urn: str | None,
     ) -> PublishOutcome: ...
+
+    async def get_post(self, credentials: Credentials, post_urn: str) -> PostSnapshot: ...
+
+    async def delete_post(self, credentials: Credentials, post_urn: str) -> DeleteOutcome: ...

@@ -40,7 +40,7 @@ from .errors import (
     ValidationFailure,
 )
 from .media import AssetReader
-from .models import AccountBinding, PublishReceipt
+from .models import AccountBinding, DeleteOutcome, PublishReceipt
 from .store import (
     PublicationEvent,
     PublicationRecord,
@@ -496,6 +496,48 @@ class PublicationService:
         )
         await self._event(publication_id, "cancelled", {}, actor)
         return "cancelled"
+
+    async def delete_publication(
+        self,
+        publication_id: str,
+        *,
+        binding: AccountBinding,
+        actor: str,
+        now: datetime | None = None,
+    ) -> DeleteOutcome:
+        """Delete a post this binding actually published.
+
+        The target URN is resolved from **our own receipt ledger**, never from a
+        caller argument. That is the whole safety property: a tool cannot be
+        handed an arbitrary URN and asked to delete it, because a URN we did not
+        record is not a publication of ours.
+
+        Deleting is separate from publishing approval and does not consume one —
+        an approval authorizes a post going out, not its removal. It is recorded
+        as its own event with the operator who asked for it.
+        """
+        moment = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+        record = await self._require(publication_id)
+
+        if record.binding_id != binding.binding_id:
+            raise AuthorForbidden(
+                f"publication {publication_id} does not belong to binding {binding.binding_id}"
+            )
+        if record.state != "published" or not record.post_urn:
+            raise ValidationFailure(
+                f"publication {publication_id} is {record.state} with no recorded post URN; "
+                "only a published record with a receipt can be deleted"
+            )
+
+        credentials = await self._credentials.get(binding.binding_id)
+        outcome = await self._client.delete_post(binding, credentials, record.post_urn, now=moment)
+        await self._event(
+            publication_id,
+            "deleted" if outcome.deleted else "delete_refused",
+            {"post_urn": record.post_urn, "http_status": outcome.http_status},
+            actor,
+        )
+        return outcome
 
     # ----------------------------------------------------------------- helpers
 
