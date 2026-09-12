@@ -8,7 +8,8 @@ Client-neutral by construction. Nothing here reads `client-data`, resolves a
 data and opaque trusted subjects; brand knowledge lives in the L3 skills and
 credential resolution in the hosted MCP.
 
-**Status: engineering-complete for C0 + C2 of ORG-PLAN-285; no capability is
+**Status: engineering-complete for C0 + C2 of ORG-PLAN-285 — 209 tests green,
+including the durable tier against a real Postgres; no capability is
 commissioned.** Every binding ships `publish_enabled=false` with every capability
 `unknown`, so this library refuses to publish until a recorded canary receipt
 says otherwise. It has never been run against LinkedIn.

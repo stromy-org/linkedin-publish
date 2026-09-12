@@ -8,40 +8,6 @@ ID prefix: `LIP`.
 
 ## Queue
 
-### LIP-001 — Execute the Postgres integration tier
-
-**Status:** open · **Workstream:** brand-content · **Filed:** 2026-09-12
-
-The durable tier (`tests/integration/`) was authored alongside C2 but has
-**never executed** — no Postgres was reachable on the authoring machine, so all
-20 tests skipped. ORG-PLAN-285 acceptance criterion 2 requires them run before
-the durable guarantees may be claimed, and explicitly forbids counting a skip as
-a pass. This is the single largest gap between "engineering-complete" and
-"proven" in this repo.
-
-Acceptance criteria:
-- [ ] `LINKEDIN_PUBLISH_TEST_DSN` set against a disposable Postgres 16; all 20
-      integration tests pass, none skipped.
-- [ ] The multi-process compare-and-set test observes exactly one winner.
-- [ ] The role tests connect **as `linkedin_publish_runtime`** and Postgres
-      refuses approval creation, payload rewrite, binding authorship and grant
-      issuance.
-- [ ] The rollback test proves a refused reservation did not spend the app
-      counter.
-- [x] CI runs this tier on a service container, so it cannot silently lapse back
-      to NOT-RUN. **Done 2026-09-13** — `.github/workflows/ci.yml` `integration`
-      job, plus `tests/integration/conftest.py` failing rather than skipping when
-      `CI` is set and the DSN is missing.
-
-**Progress**
-- 2026-09-13 — CI now runs the tier, so the remaining criteria are verified by
-  the workflow rather than by hand. The same commit replaced the template's call
-  to the org's private shared reusable workflow with an inlined one: a public
-  repo cannot resolve a private workflow, and the first push failed at 0s with no
-  jobs (run 34720884095).
-
-Pointers: `tests/integration/conftest.py`, `migrations/0002_roles.sql`.
-
 ### LIP-002 — Recheck `LINKEDIN_VERSION` before any commissioning
 
 **Status:** open · **Workstream:** brand-content · **Filed:** 2026-09-12
