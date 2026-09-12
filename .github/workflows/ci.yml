@@ -1,3 +1,25 @@
+# Self-contained on purpose — do NOT convert this into a call to
+# `stromy-org/stromy-org/.github/workflows/ci-python.yml`.
+#
+# The template ships that call, and every PRIVATE Python satellite uses it. This
+# repo is PUBLIC and the control plane hosting the shared workflow is PRIVATE, so
+# the call does not resolve: the run fails at 0s with a startup error, zero jobs,
+# and GitHub reports only "this run likely failed because of a workflow file
+# issue". That is exactly what happened on this repo's first push (run
+# 34720884095) — and `asset-transport` carries the same comment, having hit it
+# when it went public.
+#
+# Inlining is the right shape regardless of the mechanics: a public library must
+# be buildable from its own contents by anyone who clones it. Proving a public
+# package correct via a private workflow is a dependency its own consumers cannot
+# satisfy — and this repo is public precisely so consumers can resolve its tagged
+# source without build credentials.
+#
+# The cost is real and accepted: keep this in step with ci-python.yml by hand.
+# Keep it minimal so that stays cheap — this repo has no private git+URL
+# dependencies, so the App-token minting that workflow spends a job on has
+# nothing to do here.
+
 name: CI
 
 on:
@@ -7,10 +29,65 @@ on:
     branches: [main]
 
 jobs:
-  python-ci:
-    uses: stromy-org/stromy-org/.github/workflows/ci-python.yml@main
-    with:
-      source_package: "src/linkedin_publish"
-    # Forward the org stromy-ci App secrets (CI_APP_ID / CI_APP_PRIVATE_KEY)
-    # so the reusable workflow can clone private deps. No-op if absent.
-    secrets: inherit
+  quality:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v5
+        with:
+          version: "latest"
+      - run: uv python install 3.12
+      # `--extra postgres` matters: without asyncpg installed, pyright cannot
+      # resolve the import in postgres.py and would silently type-check less
+      # than it appears to.
+      - run: uv sync --extra postgres
+      - name: Lint
+        run: uv run ruff check
+      - name: Type check
+        run: uv run pyright
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v5
+        with:
+          version: "latest"
+      - run: uv python install 3.12
+      - run: uv sync --extra postgres
+      - name: Tests
+        run: uv run pytest -v
+
+  # The durable tier needs a real Postgres: multi-process compare-and-set,
+  # transactional rollback of partial quota reservations, and column-level GRANTs
+  # actually refusing a write. None of it is provable against an in-memory store,
+  # so it runs here rather than being left to a developer's machine — where it
+  # skipped, and a skip is a NOT-RUN, not a pass.
+  integration:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v5
+        with:
+          version: "latest"
+      - run: uv python install 3.12
+      - run: uv sync --extra postgres
+      - name: Integration tests
+        env:
+          LINKEDIN_PUBLISH_TEST_DSN: postgres://postgres:postgres@localhost:5432/postgres
+        # A skipped tier here is a failure, not a pass — enforced in
+        # tests/integration/conftest.py, which fails rather than skips when CI is
+        # set and the DSN is missing.
+        run: uv run pytest tests/integration -v

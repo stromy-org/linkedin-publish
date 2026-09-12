@@ -28,8 +28,17 @@ Acceptance criteria:
       issuance.
 - [ ] The rollback test proves a refused reservation did not spend the app
       counter.
-- [ ] CI runs this tier on a service container, so it cannot silently lapse back
-      to NOT-RUN.
+- [x] CI runs this tier on a service container, so it cannot silently lapse back
+      to NOT-RUN. **Done 2026-09-13** — `.github/workflows/ci.yml` `integration`
+      job, plus `tests/integration/conftest.py` failing rather than skipping when
+      `CI` is set and the DSN is missing.
+
+**Progress**
+- 2026-09-13 — CI now runs the tier, so the remaining criteria are verified by
+  the workflow rather than by hand. The same commit replaced the template's call
+  to the org's private shared reusable workflow with an inlined one: a public
+  repo cannot resolve a private workflow, and the first push failed at 0s with no
+  jobs (run 34720884095).
 
 Pointers: `tests/integration/conftest.py`, `migrations/0002_roles.sql`.
 

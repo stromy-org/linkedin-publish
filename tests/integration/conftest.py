@@ -25,8 +25,22 @@ asyncpg = pytest.importorskip("asyncpg", reason="the `postgres` extra is not ins
 
 
 def dsn() -> str:
+    """The test DSN, or a skip — except in CI, where a skip is a failure.
+
+    Locally, skipping is the right behaviour: not every machine has a Postgres,
+    and the offline tiers still prove plenty. In CI it is the opposite. This tier
+    exists because an in-memory store cannot prove multi-process contention or a
+    column-level GRANT, so a silent skip there would quietly restore the gap —
+    green, and testing nothing. The workflow provides a service container; if the
+    DSN is missing, something broke and we want to hear about it.
+    """
     value = os.environ.get(DSN_ENV)
     if not value:
+        if os.environ.get("CI"):
+            pytest.fail(
+                f"{DSN_ENV} is unset in CI. This tier must run here — a skip is a "
+                "NOT-RUN, not a pass. Check the postgres service container."
+            )
         pytest.skip(f"{DSN_ENV} is not set — NOT-RUN, not a pass")
     return value
 

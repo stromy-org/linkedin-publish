@@ -96,8 +96,10 @@ uv run pytest tests/integration             # needs a real Postgres (see below)
 
 The integration tier exercises what an in-memory store cannot: two processes
 racing a compare-and-set, a transaction rolling back a partial quota reservation,
-and column-level `GRANT`s actually refusing a write. It **skips** without a DSN,
-and a skip is a NOT-RUN, not a pass:
+and column-level `GRANT`s actually refusing a write. **CI runs it against a
+Postgres service container**, and a skip there is a hard failure rather than a
+pass — that is the point, since a silently-skipped tier is green and proves
+nothing. Locally it skips without a DSN; to run it:
 
 ```bash
 docker run --rm -e POSTGRES_PASSWORD=pg -p 5432:5432 postgres:16
@@ -131,6 +133,16 @@ Consumed downstream via `[tool.uv.sources]` git+URL pins.
    into stromy-org.
 
 Full pattern: `stromy-org/infra-docs/ai/internal-libs.md`.
+
+## CI
+
+Deliberately **self-contained** — it does not call the org's shared
+`ci-python.yml` reusable workflow, because that lives in a private repo and this
+one is public: the call does not resolve, and the run dies at 0s with no jobs and
+only "this run likely failed because of a workflow file issue" to show for it.
+See the comment at the top of `.github/workflows/ci.yml`. The cost is keeping it
+in step with the shared workflow by hand; the benefit is that anyone who clones
+this public repo can prove it correct from its own contents.
 
 ## Agent instructions
 
