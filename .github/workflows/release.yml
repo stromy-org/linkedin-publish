@@ -22,11 +22,45 @@ permissions:
   contents: write
 
 jobs:
-  build-and-release:
+  # A RELEASE MUST SHIP REVIEWED, CI-GATED CODE — and until 2026-09-13 this
+  # template did not say so, while all six library satellites did. Every one of
+  # media-gen, lead-scout, linkedin-data, report-renderer, asset-transport and
+  # fetch-kit carries this guard; the template carried neither it nor the quality
+  # job, so a `copier update` REMOVED both from whichever satellite adopted it.
+  # Measured on a media-gen clone that day: the update deleted `guard` and
+  # `quality` and left `build-and-release` with no `needs:` at all — a release
+  # gate silently traded away for a template sync. Backported here so the
+  # template is no longer the one repo in its own fleet without it.
+  guard:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
+      - uses: actions/checkout@v7
+        with:
+          # The ancestry test needs real history; a shallow clone makes
+          # `merge-base --is-ancestor` answer about a graph it cannot see.
+          fetch-depth: 0
+      - name: Refuse a tag that is not reachable from main
+        run: |
+          git fetch origin main --quiet
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "::error::Tag ${GITHUB_REF_NAME} (${GITHUB_SHA}) is not an ancestor of origin/main."
+            echo "::error::Merge the work to main before tagging — a release must ship reviewed, CI-gated code."
+            exit 1
+          fi
+
+  quality:
+    needs: guard
+    uses: stromy-org/stromy-org/.github/workflows/ci-python.yml@main
+    with:
+      source_package: "src/linkedin_publish"
+    secrets: inherit
+
+  build-and-release:
+    needs: [guard, quality]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v7
         with:
           version: "latest"
       - name: Build distributions
@@ -50,6 +84,7 @@ jobs:
 
       # NO auto-bump dispatch here, deliberately (ORG-296, 2026-09-13).
       #
+<<<<<<< before updating
       # This step used to fire `repository_dispatch` at a hand-written list of
       # consumer repos. `POST /dispatches` returns 204 whether or not anything
       # listens, so the list could rot in silence — and it had: the receiver
@@ -63,3 +98,17 @@ jobs:
       #
       # Re-adding a fan-out is gated: `internal-lib-pins.py --check` fails on a
       # dispatch aimed at a repo with no receiver.
+=======
+      # This template used to ship a `repository_dispatch` fan-out driven by a
+      # `consumer_repos_to_notify` answer — a consumer list frozen into each
+      # satellite at scaffold time and updated by nobody afterwards. `POST
+      # /dispatches` returns 204 whether or not anything listens, so those lists
+      # rotted invisibly: measured across the org, the receiver existed in ONE
+      # repo, five named targets had none, and eight real consumers were named
+      # by no sender at all.
+      #
+      # Pins are reconciled centrally instead, by stromy-org's
+      # .github/workflows/internal-lib-pins.yml, which DERIVES the consumer graph
+      # from every repo's own [tool.uv.sources] on each run. A library must not
+      # need to know who consumes it — a scaffold-time answer can never stay true.
+>>>>>>> after updating
