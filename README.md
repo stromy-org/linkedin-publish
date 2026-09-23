@@ -129,16 +129,6 @@ approvals and commissioning grants.
 
 Consumed downstream via `[tool.uv.sources]` git+URL pins.
 
-<<<<<<< before updating
-1. Bump `[project].version` in `pyproject.toml` on `main`.
-2. `git tag vX.Y.Z && git push --tags`
-3. CI publishes a GitHub Release; `notify-parent.yml` fires `submodule-bumped`
-   into stromy-org.
-
-Full pattern: `stromy-org/infra-docs/ai/internal-libs.md`.
-
-## CI
-=======
 1. Bump `[project].version` in `pyproject.toml` on `main` — a normal reviewed PR. Relock (`uv lock`) in the same commit.
 2. Actions -> **Release** -> *Run workflow* (or `gh workflow run release.yml`).
 
@@ -149,7 +139,8 @@ without having bumped the version is refused before anything is built.
 
 Consumer pins are not your job: stromy-org's `internal-lib-pins.yml` reconciles
 them daily from every consumer's own `[tool.uv.sources]`.
->>>>>>> after updating
+
+## CI
 
 Deliberately **self-contained** — it does not call the org's shared
 `ci-python.yml` reusable workflow, because that lives in a private repo and this
