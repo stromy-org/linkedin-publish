@@ -89,6 +89,36 @@ Prints validity and the canonical digest. Reads no credential, opens no database
 makes no network call — and says `UNAPPROVED`, because validation is not
 authorization to publish.
 
+## Commissioning an account
+
+The first two operator steps of ORG-PLAN-285 C1, in order. The credential is read
+from the environment only — `LINKEDIN_ACCESS_TOKEN`, `LINKEDIN_CLIENT_ID`,
+`LINKEDIN_CLIENT_SECRET`, optionally `LINKEDIN_CREDENTIAL_VERSION` — never from an
+argument, so it never reaches shell history.
+
+```bash
+# 1. Probe the freshly minted token: active? which scopes? which app? whose account?
+#    Prints the app-scoped author URN and the MEASURED expiry. Writes nothing.
+uv run linkedin-publish account inspect
+
+# 2. Register the binding under the writer role. Created DISABLED; enables nothing.
+#    --credential-ref is where the secret lives (e.g. a Key Vault secret name), never the value.
+uv run linkedin-publish account register \
+  --account-id william-personal --subject-id <operator Entra object id> \
+  --app-id <App A client id> --author-urn urn:li:person:<sub from step 1> \
+  --credential-ref <secret name> --credential-version <secret version> --dsn "$WRITER_DSN"
+
+# 3. Re-inspect against the binding and store the measured scopes + expiry on it.
+uv run linkedin-publish account inspect --binding <id> --dsn "$WRITER_DSN" --record
+```
+
+`inspect` exits `0` healthy (or a clean probe), `1` known bad — inactive, wrong
+app, wrong member, missing scope — and `2` unknown: the probe could not complete,
+which is never read as "no token". A binding with a different member, app or
+adapter under an existing id is refused: that is a new binding with fresh
+approvals, not an edit. For the CMA app, which has no OIDC product, pass
+`--no-identity`; its identity then stays unproven, which keeps it unactivatable.
+
 ## Tests
 
 ```bash
@@ -122,8 +152,9 @@ uv run linkedin-publish db migrate --dsn ...     # under the migration identity
 
 Two roles, and the split is the point: `linkedin_publish_runtime` moves
 publications through delivery states and cannot create an approval, author a
-binding, or rewrite an approved payload; `linkedin_publish_writer` mints
-approvals and commissioning grants.
+binding, or rewrite an approved payload; `linkedin_publish_writer` registers
+bindings, records token observations on them, and mints approvals and
+commissioning grants.
 
 ## Releases
 

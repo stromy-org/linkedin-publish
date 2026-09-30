@@ -32,7 +32,9 @@ __all__ = [
     "CredentialProvider",
     "StaticCredentialProvider",
     "TokenObservation",
+    "inspect_credentials",
     "introspect_token",
+    "member_sub_from_author",
     "verify_identity",
 ]
 
@@ -225,6 +227,62 @@ async def verify_identity(
     if sub != expected_member_sub:
         return False, sub, "userinfo_member_mismatch"
     return True, sub, None
+
+
+def member_sub_from_author(author_urn: str) -> str | None:
+    """The OIDC `sub` a person author URN encodes, or None for an organization.
+
+    For an app with Sign In with LinkedIn, `/v2/userinfo`'s `sub` *is* the
+    app-scoped person id, so `urn:li:person:<sub>` is the author. A vanity URL is
+    a different identifier and is never an input here.
+    """
+    prefix = "urn:li:person:"
+    return author_urn[len(prefix) :] if author_urn.startswith(prefix) else None
+
+
+async def inspect_credentials(
+    http: httpx.AsyncClient,
+    credentials: Credentials,
+    *,
+    declared_scopes: tuple[str, ...],
+    expected_app_id: str | None = None,
+    expected_member_sub: str | None = None,
+    check_identity: bool = True,
+    api_base: str,
+    now: datetime | None = None,
+) -> TokenObservation:
+    """Introspect a token and, for an OIDC app, verify whose it is.
+
+    The one entry point `account inspect` and the hosted health path share. Each
+    fact keeps its own field: a wrong app is recorded as a failed identity — the
+    credential is not the one this binding names — never as an inactive token,
+    because the fixes differ (re-register vs. re-mint).
+
+    `check_identity=False` is for a binding whose app has no OIDC product (the CMA
+    app). Its identity stays `None` with a named reason, which keeps it
+    unactivatable rather than waving it through.
+    """
+    observation = await introspect_token(http, credentials, declared_scopes=declared_scopes, now=now)
+    if observation.token_active is None:
+        return observation
+
+    if expected_app_id is not None and observation.app_id is not None and observation.app_id != expected_app_id:
+        return observation.model_copy(update={"identity_verified": False, "reason": "introspection_app_mismatch"})
+
+    if not check_identity:
+        return observation.model_copy(update={"reason": observation.reason or "identity_not_checked_no_oidc"})
+
+    verified, sub, identity_reason = await verify_identity(
+        http, credentials, expected_member_sub=expected_member_sub, api_base=api_base
+    )
+    return observation.model_copy(
+        update={
+            "identity_verified": verified,
+            "member_sub": sub,
+            # Liveness failures outrank identity notes; otherwise say why identity is unproven.
+            "reason": observation.reason or identity_reason,
+        }
+    )
 
 
 class HealthCache:

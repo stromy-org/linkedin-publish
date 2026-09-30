@@ -22,14 +22,18 @@ transaction here spans a LinkedIn request.
 from __future__ import annotations
 
 import hashlib
+import json
 from collections.abc import Sequence
 from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from ._json import loads_object
+from .auth import TokenObservation
+from .bindings import as_registration, conflict_message, registration_conflicts, require_observation_version
 from .exceptions import DependencyError
 from .limits import BudgetKey, QuotaExhausted
+from .models import AccountBinding
 from .store import (
     ApprovalRecord,
     CommissioningGrant,
@@ -45,6 +49,7 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 
 __all__ = [
     "MIGRATIONS_DIR",
+    "PostgresBindingStore",
     "PostgresBudgetStore",
     "PostgresPublicationStore",
     "apply_migrations",
@@ -62,7 +67,7 @@ REQUIRED_MIGRATION = "0002_roles"
 _MIGRATION_LOCK_KEY = 0x1_4E_D1_9B
 
 
-def _require_asyncpg() -> Any:
+def require_asyncpg() -> Any:
     try:
         import asyncpg as module
     except ModuleNotFoundError as exc:  # pragma: no cover - exercised by the extra test
@@ -87,7 +92,7 @@ async def apply_migrations(dsn: str, *, applied_by: str = "migrator") -> list[st
     silently re-running an edited migration is how two environments diverge while
     both report "up to date".
     """
-    asyncpg = _require_asyncpg()
+    asyncpg = require_asyncpg()
     applied: list[str] = []
     connection = await asyncpg.connect(dsn)
     try:
@@ -413,6 +418,105 @@ class PostgresPublicationStore:
             at,
         )
         return row is not None
+
+
+def _as_binding(row: Any) -> AccountBinding:
+    capabilities = row["capabilities"]
+    if isinstance(capabilities, (str, bytes)):
+        # Same asyncpg jsonb-as-string behaviour `_as_record` documents.
+        capabilities = json.loads(capabilities)
+    return AccountBinding.model_validate(
+        {
+            "binding_id": row["binding_id"],
+            "account_id": row["account_id"],
+            "subject_kind": row["subject_kind"],
+            "subject_id": row["subject_id"],
+            "app_id": row["app_id"],
+            "author_urn": row["author_urn"],
+            "allowed_organization_urns": tuple(row["allowed_org_urns"] or ()),
+            "adapter": row["adapter"],
+            "declared_scopes": tuple(row["declared_scopes"] or ()),
+            "observed_scopes": tuple(row["observed_scopes"] or ()),
+            "credential_ref": row["credential_ref"],
+            "credential_version": row["credential_version"],
+            "token_expires_at": row["token_expires_at"],
+            "token_observed_at": row["token_observed_at"],
+            "capabilities": capabilities,
+            "publish_enabled": row["publish_enabled"],
+        }
+    )
+
+
+class PostgresBindingStore:
+    """Account bindings. Satisfies `BindingStore`; writes need the writer role."""
+
+    def __init__(self, pool: asyncpg.Pool) -> None:
+        self._pool = pool
+
+    async def register(self, binding: AccountBinding) -> bool:
+        stored = as_registration(binding)
+        row = await self._pool.fetchrow(
+            """
+            INSERT INTO linkedin_publish.account_bindings (
+                binding_id, account_id, subject_kind, subject_id, app_id, author_urn,
+                allowed_org_urns, adapter, declared_scopes, credential_ref, credential_version
+            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+            ON CONFLICT (binding_id) DO NOTHING
+            RETURNING binding_id
+            """,
+            stored.binding_id,
+            stored.account_id,
+            stored.subject_kind,
+            stored.subject_id,
+            stored.app_id,
+            stored.author_urn,
+            list(stored.allowed_organization_urns),
+            stored.adapter,
+            list(stored.declared_scopes),
+            stored.credential_ref,
+            stored.credential_version,
+        )
+        if row is not None:
+            return True
+        existing = await self.get(stored.binding_id)
+        if existing is None:  # pragma: no cover - a concurrent delete; no delete path exists
+            raise StoreConflict(f"binding {stored.binding_id!r} vanished during registration")
+        differing = registration_conflicts(existing, stored)
+        if differing:
+            raise StoreConflict(conflict_message(stored.binding_id, differing))
+        return False
+
+    async def get(self, binding_id: str) -> AccountBinding | None:
+        row = await self._pool.fetchrow(
+            "SELECT * FROM linkedin_publish.account_bindings WHERE binding_id = $1", binding_id
+        )
+        return _as_binding(row) if row else None
+
+    async def record_observation(self, binding_id: str, observation: TokenObservation) -> AccountBinding:
+        # The credential-version match is in the WHERE clause, so the check and
+        # the write are one statement — a rotation landing in between cannot slip
+        # a stale probe's expiry onto the new secret.
+        row = await self._pool.fetchrow(
+            """
+            UPDATE linkedin_publish.account_bindings
+               SET observed_scopes = $3, token_expires_at = $4, token_observed_at = $5,
+                   updated_at = now()
+             WHERE binding_id = $1 AND credential_version = $2
+            RETURNING *
+            """,
+            binding_id,
+            observation.credential_version,
+            list(observation.observed_scopes),
+            observation.expires_at,
+            observation.observed_at,
+        )
+        if row is not None:
+            return _as_binding(row)
+        existing = await self.get(binding_id)
+        if existing is None:
+            raise StoreConflict(f"binding {binding_id!r} is not registered")
+        require_observation_version(existing, observation)
+        raise StoreConflict(f"binding {binding_id!r} was not updated")  # pragma: no cover
 
 
 class PostgresBudgetStore:
