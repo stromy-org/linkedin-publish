@@ -145,6 +145,22 @@ jobs:
     #     `event == push` — but relying on that is relying on a detail.)
     #
     # Keep these steps in step with `ci.yml` by hand.
+    #
+    # The Postgres service is that rule applied: `ci.yml` runs the integration
+    # tier against one, and `tests/integration/conftest.py` FAILS (not skips)
+    # when CI is set without a DSN — so a release without it cannot pass.
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
     steps:
       - uses: actions/checkout@v7
         with:
@@ -164,6 +180,8 @@ jobs:
       - name: Type check
         run: uv run pyright src/linkedin_publish
       - name: Tests
+        env:
+          LINKEDIN_PUBLISH_TEST_DSN: postgres://postgres:postgres@localhost:5432/postgres
         run: uv run pytest
 
   publish:
