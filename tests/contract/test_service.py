@@ -130,6 +130,37 @@ async def test_a_dry_run_makes_zero_requests_and_mutates_nothing() -> None:
     await client.aclose()
 
 
+async def test_a_dry_run_reports_expiry_without_writing_it() -> None:
+    """An overdue row is COUNTED as expiring; the live tick is the one that writes it."""
+    overdue = record(scheduled_at=NOW - timedelta(days=2), expires_at=NOW - timedelta(hours=1))
+    store, client, log, service, bound = await seeded(records=[overdue])
+    result = await service.publish_due(bound, campaign_id="camp-1", now=NOW, dry_run=True)
+
+    assert result.expired == 1
+    stored = await store.get_publication("pub-1")
+    assert stored is not None
+    assert stored.state == "pending", "a dry run must not expire a row"
+    assert await store.events("pub-1") == []
+    assert log.count == 0
+    await client.aclose()
+
+
+async def test_a_dry_run_leaves_a_dead_sending_lease_alone() -> None:
+    """Recovering a lease turns `sending` into `unknown` — a write a dry run never makes."""
+    store, client, _log, service, bound = await seeded()
+    stuck = await store.get_publication("pub-1")
+    assert stuck is not None
+    store._records["pub-1"] = stuck.model_copy(  # noqa: SLF001 - fixture surgery on the in-memory store
+        update={"state": "sending", "attempt_token": "t-dead", "lease_deadline": NOW - timedelta(minutes=1)}
+    )
+    await service.publish_due(bound, campaign_id="camp-1", now=NOW, dry_run=True)
+    after = await store.get_publication("pub-1")
+    assert after is not None
+    assert after.state == "sending"
+    assert after.attempt_token == "t-dead"
+    await client.aclose()
+
+
 async def test_no_due_records_is_no_work_not_a_failure() -> None:
     _store, client, log, service, bound = await seeded(
         records=[record(scheduled_at=NOW + timedelta(days=1), expires_at=NOW + timedelta(days=2))]
@@ -538,17 +569,17 @@ async def test_cancelling_an_unknown_record_reports_outcome_pending() -> None:
 
 async def test_a_dead_claim_returns_to_pending() -> None:
     """`claimed` means no send began, so it is safe to re-offer."""
-    store, client, _log, service, bound = await seeded()
+    store, client, log, service, bound = await seeded()
     await store.compare_and_set(
         "pub-1",
         expected_state="pending",
         expected_attempt_token=None,
         updates={"state": "claimed", "attempt_token": "dead", "lease_deadline": NOW - timedelta(minutes=1)},
     )
-    await service.publish_due(bound, campaign_id="camp-1", now=NOW, dry_run=True)
-    stored = await store.get_publication("pub-1")
-    assert stored is not None
-    assert stored.state == "pending"
+    result = await service.publish_due(bound, campaign_id="camp-1", now=NOW, dry_run=False)
+    assert "lease_recovered" in [event.kind for event in await store.events("pub-1")]
+    assert result.published == 1, "re-offered after recovery and sent exactly once"
+    assert log.count == 1
     await client.aclose()
 
 

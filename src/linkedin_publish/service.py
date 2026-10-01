@@ -185,8 +185,12 @@ class PublicationService:
         moment = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
         result = TickResult(dry_run=dry_run)
 
-        await self._expire_overdue(binding, moment, result)
-        await self._recover_leases(binding, moment)
+        # A dry run reports what WOULD expire and recovers no lease: both are
+        # ledger writes (`sending` -> `unknown` among them), and a dry run
+        # promises to mutate no row. The next live tick performs them.
+        await self._expire_overdue(binding, moment, result, write=not dry_run)
+        if not dry_run:
+            await self._recover_leases(binding, moment)
 
         due = await self._store.find_due(
             binding_id=binding.binding_id, campaign_id=campaign_id, now=moment, limit=limit
@@ -432,11 +436,12 @@ class PublicationService:
                 )
 
     async def _expire_overdue(
-        self, binding: AccountBinding, now: datetime, result: TickResult
+        self, binding: AccountBinding, now: datetime, result: TickResult, *, write: bool = True
     ) -> None:
         for record in await self._all_for(binding):
             if record.state == "pending" and record.is_expired(now):
-                await self._safe_cas(record, "pending", {"state": "expired"}, "expired")
+                if write:
+                    await self._safe_cas(record, "pending", {"state": "expired"}, "expired")
                 result.expired += 1
 
     # --------------------------------------------------------- reconciliation
