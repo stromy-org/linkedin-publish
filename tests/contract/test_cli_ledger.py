@@ -20,8 +20,7 @@ import pytest
 from click.testing import CliRunner
 
 import linkedin_publish
-from linkedin_publish import InMemoryPublicationStore, PublicationService, StaticCredentialProvider
-from linkedin_publish import cli
+from linkedin_publish import InMemoryPublicationStore, PublicationService, StaticCredentialProvider, cli
 from tests.conftest import NOW, binding, make_client
 from tests.contract.test_service import DIGEST, POST_URN, created, record
 
