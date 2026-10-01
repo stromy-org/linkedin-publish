@@ -47,6 +47,7 @@ from .store import (
     PublicationStore,
     StoreConflict,
 )
+from .urns import POST_TYPES, UrnError, validate_urn
 
 __all__ = ["BindingLoader", "PublicationService", "TickResult"]
 
@@ -457,43 +458,12 @@ class PublicationService:
     ) -> PublicationRecord:
         """Record an operator's authenticated evidence about an unknown send.
 
-        Either attach a verified URN the operator saw on LinkedIn, or mark the
-        attempt failed with a reason. There is deliberately no automated
-        search-by-text reconciliation: member reads are not available on the
-        pilot's scopes, and guessing which post is ours is worse than asking.
+        See `reconcile_publication`, which this delegates to so the operator CLI
+        can reconcile with nothing but the ledger — no LinkedIn client, no token.
         """
-        moment = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
-        record = await self._require(publication_id)
-        if record.state != "unknown":
-            raise ValidationFailure(
-                f"publication {publication_id} is {record.state}; only unknown records are reconciled"
-            )
-        if (post_urn is None) == (failure_reason is None):
-            raise ValidationFailure("reconcile requires exactly one of post_urn or failure_reason")
-
-        if post_urn is not None:
-            updated = await self._store.compare_and_set(
-                publication_id,
-                expected_state="unknown",
-                expected_attempt_token=None,
-                updates={
-                    "state": "published",
-                    "post_urn": post_urn,
-                    "permalink": f"https://www.linkedin.com/feed/update/{post_urn}/",
-                    "published_at": moment,
-                },
-            )
-            await self._event(publication_id, "reconciled_published", {"post_urn": post_urn}, actor)
-            return updated
-
-        updated = await self._store.compare_and_set(
-            publication_id,
-            expected_state="unknown",
-            expected_attempt_token=None,
-            updates={"state": "failed", "failure_code": "operator_disposition", "failure_detail": failure_reason},
+        return await reconcile_publication(
+            self._store, publication_id, actor=actor, post_urn=post_urn, failure_reason=failure_reason, now=now
         )
-        await self._event(publication_id, "reconciled_failed", {"reason": failure_reason}, actor)
-        return updated
 
     async def cancel(self, publication_id: str, *, actor: str) -> str:
         """Cancel a publication if it has not passed the sending boundary.
@@ -631,3 +601,68 @@ class PublicationService:
                 detail=detail,
             )
         )
+
+
+async def reconcile_publication(
+    store: PublicationStore,
+    publication_id: str,
+    *,
+    actor: str,
+    post_urn: str | None = None,
+    failure_reason: str | None = None,
+    now: datetime | None = None,
+) -> PublicationRecord:
+    """Record an operator's authenticated evidence about an unknown send.
+
+    Either attach a verified post URN the operator saw on LinkedIn, or mark the
+    attempt failed with a reason. There is deliberately no automated
+    search-by-text reconciliation: member reads are not available on the
+    pilot's scopes, and guessing which post is ours is worse than asking.
+
+    Only `unknown` records are reconciled. Anything else already has an outcome
+    the ledger is sure of, and overwriting it would erase that certainty.
+    """
+    moment = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    record = await store.get_publication(publication_id)
+    if record is None:
+        raise ValidationFailure(f"unknown publication {publication_id}")
+    if record.state != "unknown":
+        raise ValidationFailure(
+            f"publication {publication_id} is {record.state}; only unknown records are reconciled"
+        )
+    if (post_urn is None) == (failure_reason is None):
+        raise ValidationFailure("reconcile requires exactly one of post_urn or failure_reason")
+
+    if post_urn is not None:
+        try:
+            validate_urn(post_urn, POST_TYPES, field="post_urn")
+        except UrnError as exc:
+            raise ValidationFailure(str(exc)) from exc
+        updated = await store.compare_and_set(
+            publication_id,
+            expected_state="unknown",
+            expected_attempt_token=None,
+            updates={
+                "state": "published",
+                "post_urn": post_urn,
+                "permalink": f"https://www.linkedin.com/feed/update/{post_urn}/",
+                "published_at": moment,
+            },
+        )
+        kind = "reconciled_published"
+        detail: dict[str, object] = {"post_urn": post_urn}
+    else:
+        if not (failure_reason or "").strip():
+            raise ValidationFailure("a failure reason must say what the operator found")
+        updated = await store.compare_and_set(
+            publication_id,
+            expected_state="unknown",
+            expected_attempt_token=None,
+            updates={"state": "failed", "failure_code": "operator_disposition", "failure_detail": failure_reason},
+        )
+        kind = "reconciled_failed"
+        detail = {"reason": failure_reason}
+    await store.append_event(
+        PublicationEvent(publication_id=publication_id, at=moment, kind=kind, actor=actor, detail=detail)
+    )
+    return updated

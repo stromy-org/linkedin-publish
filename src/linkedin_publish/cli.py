@@ -3,12 +3,16 @@
 The CLI is the *trusted operator path*. Two things follow from that and are not
 negotiable:
 
-* `approval record` previews the exact stored bytes, requires the expected
-  digest as an argument, and requires an interactive confirmation. There is no
-  `--yes`. Production automation consumes approvals; it never creates them.
-* `account commission` issues a grant scoped to one stored publication, one
-  digest, one binding and one capability, expiring shortly. A scheduler identity
-  cannot reach this command's writer role.
+* `approval record` reads the publication FROM THE LEDGER, previews its exact
+  stored payload, requires the digest you reviewed as an argument, and requires
+  an interactive confirmation before writing the approval. There is no `--yes`.
+  Production automation consumes approvals; it never creates them.
+* `account commission` writes a grant scoped to one stored, approved
+  publication, one digest, one binding and one capability, expiring shortly. A
+  scheduler identity cannot reach this command's writer role.
+* `publication reconcile` records what the operator found on LinkedIn for an
+  `unknown` send — the post URN, or a failure reason. Nothing else moves an
+  `unknown` record, by design.
 
 `account register` and `account inspect` never take a credential as an
 argument: registration stores a reference and a version, and inspection reads
@@ -40,7 +44,7 @@ from .bindings import IDENTITY_FIELDS, BindingStore
 from .client import default_limits, default_timeout
 from .manifest import PublishManifest
 from .models import AccountBinding
-from .store import ApprovalRecord, CommissioningGrant, StoreConflict
+from .store import ApprovalRecord, CommissioningGrant, PublicationRecord, PublicationStore, StoreConflict
 from .version import API_BASE
 
 #: How long a commissioning grant stays usable. Short on purpose — it exists to
@@ -113,6 +117,63 @@ async def _binding_store(dsn: str) -> AsyncIterator[BindingStore]:
         yield PostgresBindingStore(pool)
     finally:
         await pool.close()
+
+
+@asynccontextmanager
+async def _publication_store(dsn: str) -> AsyncIterator[PublicationStore]:
+    """Open the Postgres publication ledger for one command. A seam for tests."""
+    from .postgres import PostgresPublicationStore, check_compatible, require_asyncpg
+
+    asyncpg = require_asyncpg()
+    pool = await asyncpg.create_pool(dsn, min_size=1, max_size=2)
+    try:
+        await check_compatible(pool)
+        yield PostgresPublicationStore(pool)
+    finally:
+        await pool.close()
+
+
+async def _load_publication(dsn: str, publication_id: str) -> PublicationRecord:
+    async with _publication_store(dsn) as store:
+        record = await store.get_publication(publication_id)
+    if record is None:
+        click.echo(f"ABORT: no publication {publication_id} in the ledger.", err=True)
+        sys.exit(1)
+    return record
+
+
+def _show_stored(record: PublicationRecord) -> None:
+    """Print exactly what the ledger holds — the bytes an approval is about."""
+    click.echo("--- stored publication (from the ledger) ---")
+    click.echo(f"  publication  {record.publication_id}   state {record.state}")
+    click.echo(f"  binding      {record.binding_id}")
+    click.echo(f"  campaign     {record.key.campaign_id}   post {record.key.post_id}")
+    click.echo(f"  window       {record.scheduled_at.isoformat()} -> {record.expires_at.isoformat()}")
+    click.echo(f"  digest       {record.payload_digest}")
+    click.echo(json.dumps(record.draft.model_dump(mode="json"), indent=2, ensure_ascii=False))
+    click.echo("--- end ---")
+
+
+def _require_match(record: PublicationRecord, *, binding_id: str, expected_digest: str) -> None:
+    if record.binding_id != binding_id:
+        click.echo(
+            f"ABORT: {record.publication_id} belongs to binding {record.binding_id}, not {binding_id}.", err=True
+        )
+        sys.exit(1)
+    if record.payload_digest != expected_digest:
+        click.echo(
+            f"ABORT: the ledger holds digest {record.payload_digest}, not the {expected_digest} you reviewed. "
+            "What you reviewed is not what is stored.",
+            err=True,
+        )
+        sys.exit(1)
+    if record.state != "pending":
+        click.echo(
+            f"ABORT: {record.publication_id} is {record.state}; "
+            "only a pending publication can be approved or commissioned.",
+            err=True,
+        )
+        sys.exit(1)
 
 
 def _verdict(observation: TokenObservation, *, probe: bool) -> str:
@@ -428,29 +489,43 @@ def account_inspect(
 
 @account.command("commission")
 @click.option("--publication", "publication_id", required=True)
-@click.option("--digest", "expected_digest", required=True)
+@click.option("--digest", "expected_digest", required=True, help="The digest you reviewed.")
 @click.option("--binding", "binding_id", required=True)
 @click.option("--capability", required=True)
 @click.option("--actor", required=True, help="The operator commissioning identity.")
-@click.option("--out", type=click.Path(dir_okay=False, path_type=Path), default=None)
+@click.option("--dsn", envvar="LINKEDIN_PUBLISH_DSN", required=True, help="Writer-role DSN.")
 def account_commission(
     publication_id: str,
     expected_digest: str,
     binding_id: str,
     capability: str,
     actor: str,
-    out: Path | None,
+    dsn: str,
 ) -> None:
-    """Issue a one-shot grant for exactly one approved canary publication.
+    """Write a one-shot grant for exactly one approved canary publication.
 
     The grant does not enable the binding and does not enable the capability. It
     licenses a single send so that the capability can be enabled afterwards, from
-    the receipt it produces.
+    the receipt it produces. The publication must already carry an active
+    approval for the same digest.
     """
+    record = asyncio.run(_load_publication(dsn, publication_id))
+    _show_stored(record)
+    _require_match(record, binding_id=binding_id, expected_digest=expected_digest)
+
+    async def approved() -> bool:
+        async with _publication_store(dsn) as store:
+            approval = await store.get_approval(publication_id)
+        return approval is not None and approval.is_active(digest=expected_digest, now=datetime.now(timezone.utc))
+
+    if not asyncio.run(approved()):
+        click.echo(
+            f"ABORT: {publication_id} has no active approval for this digest. Run `approval record` first.",
+            err=True,
+        )
+        sys.exit(1)
+
     click.echo("Commissioning grant — this authorizes ONE real outward-facing post.")
-    click.echo(f"  publication  {publication_id}")
-    click.echo(f"  digest       {expected_digest}")
-    click.echo(f"  binding      {binding_id}")
     click.echo(f"  capability   {capability}")
     click.echo(f"  expires      {GRANT_TTL}")
     click.confirm("Issue this grant?", abort=True)
@@ -466,12 +541,13 @@ def account_commission(
         issued_at=now,
         expires_at=now + GRANT_TTL,
     )
-    rendered = grant.model_dump_json(indent=2)
-    if out is not None:
-        out.write_text(rendered)
-        click.echo(f"wrote {out}")
-    else:
-        click.echo(rendered)
+
+    async def write() -> None:
+        async with _publication_store(dsn) as store:
+            await store.put_grant(grant)
+
+    asyncio.run(write())
+    click.echo(f"granted {grant.grant_id} (expires {grant.expires_at.isoformat()})")
 
 
 # --------------------------------------------------------------------- approval
@@ -487,55 +563,98 @@ def approval() -> None:
 @click.option("--digest", "expected_digest", required=True, help="The digest you reviewed.")
 @click.option("--binding", "binding_id", required=True)
 @click.option("--actor", required=True, help="The operator approval-writer identity.")
-@click.option("--payload", type=click.Path(exists=True, dir_okay=False, path_type=Path), required=True)
-@click.option("--out", type=click.Path(dir_okay=False, path_type=Path), default=None)
+@click.option("--dsn", envvar="LINKEDIN_PUBLISH_DSN", required=True, help="Writer-role DSN.")
 def approval_record(
     publication_id: str,
     expected_digest: str,
     binding_id: str,
     actor: str,
-    payload: Path,
-    out: Path | None,
+    dsn: str,
 ) -> None:
-    """Approve the exact stored bytes for one publication.
+    """Approve the exact stored payload of one publication.
 
-    The payload is shown in full before the prompt, and the digest you passed is
-    recomputed from those bytes. A mismatch aborts — it means what you reviewed
-    is not what is stored.
+    The payload is read from the ledger and shown in full before the prompt, and
+    the digest you pass must equal the stored one. A mismatch aborts — it means
+    what you reviewed is not what is stored.
     """
-    from .manifest import canonical_digest
-
-    stored = json.loads(payload.read_text())
-    actual = canonical_digest(stored)
-
-    click.echo("--- exact bytes to be approved ---")
-    click.echo(json.dumps(stored, indent=2, ensure_ascii=False))
-    click.echo("--- end ---")
-    click.echo(f"computed digest {actual}")
-
-    if actual != expected_digest:
-        click.echo(
-            f"ABORT: the stored payload digests to {actual}, not the {expected_digest} you reviewed.",
-            err=True,
-        )
-        sys.exit(1)
+    record = asyncio.run(_load_publication(dsn, publication_id))
+    _show_stored(record)
+    _require_match(record, binding_id=binding_id, expected_digest=expected_digest)
 
     click.confirm(f"Approve publication {publication_id} for binding {binding_id}?", abort=True)
 
-    record = ApprovalRecord(
+    approval_row = ApprovalRecord(
         approval_id=f"appr_{secrets.token_urlsafe(12)}",
         publication_id=publication_id,
-        payload_digest=actual,
+        payload_digest=record.payload_digest,
         binding_id=binding_id,
         approved_by=actor,
         approved_at=datetime.now(timezone.utc),
     )
-    rendered = record.model_dump_json(indent=2)
-    if out is not None:
-        out.write_text(rendered)
-        click.echo(f"wrote {out}")
-    else:
-        click.echo(rendered)
+
+    async def write() -> None:
+        async with _publication_store(dsn) as store:
+            await store.put_approval(approval_row)
+
+    asyncio.run(write())
+    click.echo(f"approved {approval_row.approval_id}")
+
+
+# ----------------------------------------------------------------- publication
+
+
+@main.group()
+def publication() -> None:
+    """Operator dispositions on stored publications."""
+
+
+@publication.command("reconcile")
+@click.option("--publication", "publication_id", required=True)
+@click.option("--actor", required=True, help="The operator identity recording the evidence.")
+@click.option("--post-urn", default=None, help="The post URN found on LinkedIn (urn:li:share:… or urn:li:ugcPost:…).")
+@click.option("--failure-reason", default=None, help="What you found instead: the post does not exist.")
+@click.option("--dsn", envvar="LINKEDIN_PUBLISH_DSN", required=True, help="Writer-role DSN.")
+def publication_reconcile(
+    publication_id: str,
+    actor: str,
+    post_urn: str | None,
+    failure_reason: str | None,
+    dsn: str,
+) -> None:
+    """Record what actually happened to an `unknown` send.
+
+    Look at LinkedIn first. If the post is there, pass its URN; if it is not,
+    pass a failure reason. Nothing automated ever moves an `unknown` record, so
+    this is the only way out of that state — and it never re-sends.
+    """
+    from .errors import ValidationFailure
+    from .service import reconcile_publication
+
+    if (post_urn is None) == (failure_reason is None):
+        click.echo("ABORT: pass exactly one of --post-urn or --failure-reason.", err=True)
+        sys.exit(2)
+
+    record = asyncio.run(_load_publication(dsn, publication_id))
+    _show_stored(record)
+    if record.state != "unknown":
+        click.echo(f"ABORT: {publication_id} is {record.state}; only unknown records are reconciled.", err=True)
+        sys.exit(1)
+
+    outcome = f"published as {post_urn}" if post_urn else f"failed: {failure_reason}"
+    click.confirm(f"Record {publication_id} as {outcome}?", abort=True)
+
+    async def write() -> PublicationRecord:
+        async with _publication_store(dsn) as store:
+            return await reconcile_publication(
+                store, publication_id, actor=actor, post_urn=post_urn, failure_reason=failure_reason
+            )
+
+    try:
+        updated = asyncio.run(write())
+    except ValidationFailure as exc:
+        click.echo(f"ABORT: {exc}", err=True)
+        sys.exit(1)
+    click.echo(f"reconciled {publication_id}: {updated.state}")
 
 
 # ---------------------------------------------------------------------- db
