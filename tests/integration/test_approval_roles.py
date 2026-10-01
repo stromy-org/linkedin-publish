@@ -10,6 +10,7 @@ So these tests connect **as the runtime role** and assert Postgres refuses.
 
 from __future__ import annotations
 
+import json
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -181,3 +182,57 @@ async def test_the_runtime_role_may_read_what_it_needs(pool) -> None:  # noqa: A
     finally:
         await connection.execute("RESET ROLE")
         await pool.release(connection)
+
+
+# ------------------------------------------------- writer: reconcile (0003)
+
+
+async def _writer_pool():  # noqa: ANN202
+    """A pool whose every connection acts with only the writer role's rights."""
+    from tests.integration.conftest import dsn
+
+    async def as_writer(connection) -> None:  # noqa: ANN001
+        await connection.execute("SET ROLE linkedin_publish_writer")
+
+    return await asyncpg.create_pool(dsn(), min_size=1, max_size=2, init=as_writer)
+
+
+async def test_the_writer_role_can_record_the_outcome_of_an_unknown_send(pool) -> None:  # noqa: ANN001
+    """`publication reconcile` runs as the operator; 0002 left it no way to write."""
+    from linkedin_publish.postgres import PostgresPublicationStore
+    from linkedin_publish.service import reconcile_publication
+
+    await seed(pool)
+    # The shared seed stores an empty draft; reading a record back needs a real one.
+    await pool.execute(
+        "UPDATE linkedin_publish.publications SET state='unknown', draft=$1::jsonb WHERE publication_id='pub-1'",
+        json.dumps({"author_urn": PERSON, "commentary": "Intelligence, orchestrated."}),
+    )
+    writer = await _writer_pool()
+    try:
+        updated = await reconcile_publication(
+            PostgresPublicationStore(writer),
+            "pub-1",
+            actor="william",
+            post_urn="urn:li:share:7100000000000000000",
+        )
+    finally:
+        await writer.close()
+    assert updated.state == "published"
+    assert updated.post_urn == "urn:li:share:7100000000000000000"
+
+
+async def test_the_writer_role_still_cannot_rewrite_an_approved_payload_or_rearm_a_send(pool) -> None:  # noqa: ANN001
+    await seed(pool)
+    writer = await _writer_pool()
+    try:
+        for statement in (
+            "UPDATE linkedin_publish.publications SET payload_digest='0' WHERE publication_id='pub-1'",
+            "UPDATE linkedin_publish.publications SET draft='{\"x\":1}'::jsonb WHERE publication_id='pub-1'",
+            "UPDATE linkedin_publish.publications SET binding_id='bind-other' WHERE publication_id='pub-1'",
+            "UPDATE linkedin_publish.publications SET attempt_token='t' WHERE publication_id='pub-1'",
+        ):
+            with pytest.raises(asyncpg.exceptions.InsufficientPrivilegeError):
+                await writer.execute(statement)
+    finally:
+        await writer.close()

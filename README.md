@@ -24,7 +24,8 @@ and is not claimed. What is guaranteed:
 A timeout, a crash, a 5xx or a missing receipt leaves the record `unknown`, and
 nothing automated moves it from there. Not a retry, not the next tick, not a new
 process, not a token rotation, not a re-import. A human reconciles it against the
-actual post.
+actual post, with `linkedin-publish publication reconcile --publication <id>
+--actor <you> (--post-urn <urn> | --failure-reason "<what you found>")`.
 
 ## Install
 
@@ -153,8 +154,11 @@ uv run linkedin-publish db migrate --dsn ...     # under the migration identity
 Two roles, and the split is the point: `linkedin_publish_runtime` moves
 publications through delivery states and cannot create an approval, author a
 binding, or rewrite an approved payload; `linkedin_publish_writer` registers
-bindings, records token observations on them, and mints approvals and
-commissioning grants.
+bindings, records token observations on them, mints approvals and
+commissioning grants, and records the operator's outcome for an `unknown` send
+(outcome columns only — migration 0003). `approval record`, `account commission`
+and `publication reconcile` all read the publication from the ledger, show it,
+and write only after an interactive confirmation.
 
 ## Releases
 
