@@ -29,38 +29,39 @@ on:
     branches: [main]
 
 jobs:
-  quality:
+
+  python-ci:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v5
-      - uses: astral-sh/setup-uv@v5
-        with:
-          version: "latest"
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v7
       - run: uv python install 3.12
-      # `--extra postgres` matters: without asyncpg installed, pyright cannot
-      # resolve the import in postgres.py and would silently type-check less
-      # than it appears to.
-      - run: uv sync --extra postgres
+      - name: Install
+        timeout-minutes: 10
+        run: uv sync --locked --all-extras
       - name: Lint
         run: uv run ruff check
       - name: Type check
-        run: uv run pyright
-
-  test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v5
-      - uses: astral-sh/setup-uv@v5
-        with:
-          version: "latest"
-      - run: uv python install 3.12
-      - run: uv sync --extra postgres
-      - name: Tests
-        # Offline tiers only. The integration tier has its own job with a
-        # Postgres service; collecting it here would hit the conftest guard that
-        # turns a CI skip into a failure — correctly, since there is no database
-        # in this job.
-        run: uv run pytest tests/unit tests/contract -v
+        run: uv run pyright src/linkedin_publish
+      - name: Unit tests
+        run: |
+          rm -f .unit-junit.xml
+          uv run pytest tests/unit --junitxml=.unit-junit.xml
+          if [ -f .github/test-contract.yml ]; then
+            uv run --no-project --python 3.12 --with pyyaml --with jsonschema python scripts/ci/suite_execution.py --step tests --report .unit-junit.xml --returncode 0
+          fi
+      - name: Contract tests
+        run: |
+          rm -f .contract-junit.xml
+          uv run pytest tests/contract --junitxml=.contract-junit.xml
+          if [ -f .github/test-contract.yml ]; then
+            uv run --no-project --python 3.12 --with pyyaml --with jsonschema python scripts/ci/suite_execution.py --step contract --report .contract-junit.xml --returncode 0
+          fi
+      - run: uv lock --check
+      - run: uv build
 
   # The durable tier needs a real Postgres: multi-process compare-and-set,
   # transactional rollback of partial quota reservations, and column-level GRANTs
