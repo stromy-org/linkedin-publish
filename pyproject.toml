@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "linkedin-publish"
-version = "0.3.0"
+version = "0.4.0"
 description = "Official LinkedIn publishing client and durable, approval-gated publication service"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -21,7 +21,12 @@ dependencies = [
 postgres = [
     "asyncpg>=0.29",
 ]
-all = ["linkedin-publish[postgres]"]
+# Azure Database for PostgreSQL with Entra authentication (`--pg-auth entra`):
+# a managed identity or `az login` token instead of a password.
+azure = [
+    "azure-identity>=1.17",
+]
+all = ["linkedin-publish[postgres,azure]"]
 
 # PEP 735 dependency-groups — installed by default with `uv sync` (no --extra needed).
 [dependency-groups]

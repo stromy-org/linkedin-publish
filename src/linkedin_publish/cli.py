@@ -34,6 +34,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Any
 
 import click
 import httpx
@@ -105,13 +106,28 @@ def _http_client() -> httpx.AsyncClient:
     return httpx.AsyncClient(timeout=default_timeout(), limits=default_limits())
 
 
+def _pg_connect_kwargs() -> dict[str, Any]:
+    """How this invocation logs in to Postgres: the root group's --pg-auth, resolved once."""
+    from .pg_auth import PgAuthError, pool_kwargs
+
+    context = click.get_current_context(silent=True)
+    params = context.find_root().params if context is not None else {}
+    try:
+        return pool_kwargs(
+            str(params.get("pg_auth") or "password"),
+            managed_identity_client_id=params.get("pg_identity_client_id") or None,
+        )
+    except PgAuthError as exc:
+        raise click.UsageError(str(exc)) from exc
+
+
 @asynccontextmanager
 async def _binding_store(dsn: str) -> AsyncIterator[BindingStore]:
     """Open the Postgres binding store for one command. A seam for tests."""
     from .postgres import PostgresBindingStore, check_compatible, require_asyncpg
 
     asyncpg = require_asyncpg()
-    pool = await asyncpg.create_pool(dsn, min_size=1, max_size=2)
+    pool = await asyncpg.create_pool(dsn, min_size=1, max_size=2, **_pg_connect_kwargs())
     try:
         await check_compatible(pool)
         yield PostgresBindingStore(pool)
@@ -125,7 +141,7 @@ async def _publication_store(dsn: str) -> AsyncIterator[PublicationStore]:
     from .postgres import PostgresPublicationStore, check_compatible, require_asyncpg
 
     asyncpg = require_asyncpg()
-    pool = await asyncpg.create_pool(dsn, min_size=1, max_size=2)
+    pool = await asyncpg.create_pool(dsn, min_size=1, max_size=2, **_pg_connect_kwargs())
     try:
         await check_compatible(pool)
         yield PostgresPublicationStore(pool)
@@ -202,8 +218,26 @@ def _days_remaining(observation: TokenObservation) -> int | None:
 
 @click.group()
 @click.version_option(__version__)
-def main() -> None:
-    """Official LinkedIn publishing client and durable publication service."""
+@click.option(
+    "--pg-auth",
+    envvar="LINKEDIN_PUBLISH_PG_AUTH",
+    type=click.Choice(["password", "entra"], case_sensitive=False),
+    default="password",
+    show_default=True,
+    help="How ledger connections log in: the DSN's own password, or an Entra token (needs the azure extra).",
+)
+@click.option(
+    "--pg-identity-client-id",
+    envvar="LINKEDIN_PUBLISH_PG_IDENTITY_CLIENT_ID",
+    default=None,
+    help="With --pg-auth entra: the managed identity to take the token as, when the host has several.",
+)
+def main(pg_auth: str, pg_identity_client_id: str | None) -> None:
+    """Official LinkedIn publishing client and durable publication service.
+
+    Read by every command that opens the ledger, through the click context.
+    """
+    del pg_auth, pg_identity_client_id
 
 
 # --------------------------------------------------------------------- manifest
@@ -672,7 +706,7 @@ def db_migrate(dsn: str, actor: str) -> None:
     """Apply pending migrations under an advisory lock and checksum ledger."""
     from .postgres import apply_migrations
 
-    applied = asyncio.run(apply_migrations(dsn, applied_by=actor))
+    applied = asyncio.run(apply_migrations(dsn, applied_by=actor, connect_kwargs=_pg_connect_kwargs()))
     if applied:
         for version in applied:
             click.echo(f"applied {version}")

@@ -151,6 +151,14 @@ uv run linkedin-publish db plan                  # what this build ships
 uv run linkedin-publish db migrate --dsn ...     # under the migration identity
 ```
 
+The ledger needs nothing but Postgres, so it runs on any server — Azure, AWS RDS,
+a client's own. Only the login differs, and that is the one seam
+(`linkedin_publish.pg_auth`): `--pg-auth password` (the default) uses the DSN as
+written; `--pg-auth entra` (`LINKEDIN_PUBLISH_PG_AUTH=entra`, the `azure` extra)
+gives each new connection a short-lived Microsoft Entra token for a server that
+refuses passwords. Any other cloud login is a `password_provider` coroutine passed
+to `pool_kwargs()`.
+
 Two roles, and the split is the point: `linkedin_publish_runtime` moves
 publications through delivery states and cannot create an approval, author a
 binding, or rewrite an approved payload; `linkedin_publish_writer` registers

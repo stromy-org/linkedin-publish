@@ -84,17 +84,20 @@ def _checksum(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-async def apply_migrations(dsn: str, *, applied_by: str = "migrator") -> list[str]:
+async def apply_migrations(
+    dsn: str, *, applied_by: str = "migrator", connect_kwargs: dict[str, Any] | None = None
+) -> list[str]:
     """Apply pending migrations. Returns the versions applied this run.
 
     Run explicitly, under a migration identity — not the runtime role. A
     previously applied migration whose file has since changed is a hard error:
     silently re-running an edited migration is how two environments diverge while
-    both report "up to date".
+    both report "up to date". ``connect_kwargs`` comes from
+    :func:`linkedin_publish.pg_auth.pool_kwargs` when the server wants a token.
     """
     asyncpg = require_asyncpg()
     applied: list[str] = []
-    connection = await asyncpg.connect(dsn)
+    connection = await asyncpg.connect(dsn, **(connect_kwargs or {}))
     try:
         await connection.execute("SELECT pg_advisory_lock($1)", _MIGRATION_LOCK_KEY)
         await connection.execute("CREATE SCHEMA IF NOT EXISTS linkedin_publish")
