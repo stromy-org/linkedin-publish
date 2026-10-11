@@ -69,6 +69,28 @@ def test_entra_without_the_azure_extra_names_the_extra(monkeypatch: pytest.Monke
         entra_password_provider()
 
 
+def test_entra_without_aiohttp_names_the_extra_instead_of_a_transport_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import azure.identity.aio as aio
+
+    def needs_aiohttp(**_: Any) -> Any:
+        raise ImportError("aiohttp package is not installed")
+
+    monkeypatch.setattr(aio, "DefaultAzureCredential", needs_aiohttp)
+    with pytest.raises(Exception, match=r"'aiohttp'.*linkedin-publish\[azure\]"):
+        entra_password_provider()
+
+
+def test_the_azure_extra_ships_the_async_transport() -> None:
+    import tomllib
+    from pathlib import Path
+
+    project = tomllib.loads((Path(__file__).resolve().parents[2] / "pyproject.toml").read_text())
+    azure = project["project"]["optional-dependencies"]["azure"]
+    assert any(req.startswith("aiohttp") for req in azure), azure
+
+
 def _migrate_capturing(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     seen: dict[str, Any] = {}
 

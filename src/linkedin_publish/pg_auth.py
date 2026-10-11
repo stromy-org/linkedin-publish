@@ -70,7 +70,10 @@ def entra_password_provider(
             from azure.identity.aio import DefaultAzureCredential
         except ModuleNotFoundError as exc:
             raise DependencyError("azure", "azure-identity") from exc
-        credential = DefaultAzureCredential(managed_identity_client_id=managed_identity_client_id)
+        try:
+            credential = DefaultAzureCredential(managed_identity_client_id=managed_identity_client_id)
+        except ImportError as exc:  # its async transport needs aiohttp, imported only here
+            raise DependencyError("azure", "aiohttp") from exc
 
     async def provide() -> str:
         token = await credential.get_token(ENTRA_SCOPE)
