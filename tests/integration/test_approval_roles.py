@@ -236,3 +236,18 @@ async def test_the_writer_role_still_cannot_rewrite_an_approved_payload_or_rearm
                 await writer.execute(statement)
     finally:
         await writer.close()
+
+
+@pytest.mark.parametrize("role", ["linkedin_publish_runtime", "linkedin_publish_writer"])
+async def test_each_role_can_run_the_schema_compatibility_check(pool, role: str) -> None:  # noqa: ANN001
+    """Every store connection starts with `check_compatible`; a role that cannot read
+    the schema version cannot do anything at all (the first hosted dry tick failed so)."""
+    from linkedin_publish.postgres import check_compatible
+
+    connection = await pool.acquire()
+    await connection.execute(f"SET ROLE {role}")
+    try:
+        await check_compatible(connection)
+    finally:
+        await connection.execute("RESET ROLE")
+        await pool.release(connection)
