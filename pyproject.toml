@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "linkedin-publish"
-version = "0.4.0"
+version = "0.4.1"
 description = "Official LinkedIn publishing client and durable, approval-gated publication service"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -25,6 +25,9 @@ postgres = [
 # a managed identity or `az login` token instead of a password.
 azure = [
     "azure-identity>=1.17",
+    # azure.identity.aio builds its HTTP pipeline on aiohttp, which azure-identity
+    # does not depend on: without it the first Entra login fails at runtime.
+    "aiohttp>=3.9",
 ]
 all = ["linkedin-publish[postgres,azure]"]
 
