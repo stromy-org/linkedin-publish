@@ -8,7 +8,7 @@ suites:
     paths: ["tests/unit/**"]
     source_inputs: ["src/**", "pyproject.toml", "uv.lock"]
     required: true
-    minimum_executed: 1
+    minimum_executed: 121
     execution_step: tests
   - id: contract
     owner: stromy-org/linkedin-publish
@@ -17,5 +17,14 @@ suites:
     paths: ["tests/contract/**"]
     source_inputs: ["src/**", "pyproject.toml", "uv.lock"]
     required: true
-    minimum_executed: 1
+    minimum_executed: 152
     execution_step: contract
+  - id: postgres
+    owner: stromy-org/linkedin-publish
+    tier: integration
+    surface: pr
+    paths: ["tests/integration/**"]
+    source_inputs: ["src/**", "tests/**", "pyproject.toml", "uv.lock"]
+    required: true
+    minimum_executed: 28
+    execution_step: tests

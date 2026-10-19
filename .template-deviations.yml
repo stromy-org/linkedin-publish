@@ -1,0 +1,10 @@
+schema_version: 1
+deviations:
+  - path: .github/workflows/ci.yml
+    reason: >-
+      One capable Linux context retains all unit, contract and real PostgreSQL
+      assertions, including multiprocess CAS, rollback and column-level grants.
+      The generated template has no service/DSN seam; the required 121/152/28
+      owner floors and locked setup execute once without losing the durable tier.
+    owner: stromy-org/linkedin-publish
+    review_by: 2027-04-01
