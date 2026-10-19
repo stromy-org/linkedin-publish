@@ -1,0 +1,18 @@
+schema_version: 1
+deviations:
+  - path: .github/workflows/release.yml
+    reason: >-
+      Retain the release quality job's existing real PostgreSQL service,
+      LINKEDIN_PUBLISH_TEST_DSN and all 301 assertions, including the required
+      28-case durable floor. The template has no service/DSN seam. All
+      v0.8.13 release credential and version/ancestry guards are adopted.
+    owner: stromy-org/linkedin-publish
+    review_by: 2027-04-01
+  - path: .github/workflows/ci.yml
+    reason: >-
+      One capable Linux context retains all unit, contract and real PostgreSQL
+      assertions, including multiprocess CAS, rollback and column-level grants.
+      The generated template has no service/DSN seam; the required 121/152/28
+      owner floors and locked setup execute once without losing the durable tier.
+    owner: stromy-org/linkedin-publish
+    review_by: 2027-04-01
