@@ -12,9 +12,10 @@ is the single chokepoint that enforces that.
 
 from __future__ import annotations
 
-import re
 from datetime import datetime
-from typing import Final, Literal
+from typing import Literal
+
+from social_publish.errors import MAX_PROVIDER_CODE, MAX_REQUEST_ID, sanitize_detail
 
 __all__ = [
     "AuthorForbidden",
@@ -44,30 +45,10 @@ FailureCode = Literal[
     "provider_rejected",
 ]
 
-# Provider error codes are short machine tokens; anything longer is prose that
-# may quote the submitted post, so it is dropped rather than truncated.
-_MAX_PROVIDER_CODE = 64
-_MAX_REQUEST_ID = 128
-_SAFE_TOKEN: Final = re.compile(r"^[A-Za-z0-9_.:\-]+$")
-
-
-def sanitize_detail(value: object, *, limit: int) -> str | None:
-    """Return `value` as a short safe token, or None when it is not one.
-
-    Deliberately conservative: a value that is not already a bounded token of
-    identifier characters is discarded entirely. Truncating instead would keep a
-    prefix of whatever the provider echoed back, which is the thing this exists
-    to prevent.
-    """
-    if value is None:
-        return None
-    text = value if isinstance(value, str) else str(value)
-    text = text.strip()
-    if not text or len(text) > limit:
-        return None
-    if not _SAFE_TOKEN.match(text):
-        return None
-    return text
+# One chokepoint for both namespaces: the sanitizer, its limits and its token
+# pattern live in `social_publish.errors` and are re-exported here unchanged.
+_MAX_PROVIDER_CODE = MAX_PROVIDER_CODE
+_MAX_REQUEST_ID = MAX_REQUEST_ID
 
 
 class LinkedInPublishError(Exception):

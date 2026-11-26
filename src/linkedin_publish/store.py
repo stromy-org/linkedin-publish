@@ -23,6 +23,9 @@ from typing import Literal, Protocol, runtime_checkable
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from social_publish.errors import StoreConflict
+from social_publish.states import LINKEDIN_TRANSITIONS
+
 from .models import Adapter, PostDraft, SubjectKind
 
 __all__ = [
@@ -52,22 +55,10 @@ PublicationState = Literal[
 #: States from which no automated transition may ever send again.
 TERMINAL_OR_HELD: frozenset[str] = frozenset({"published", "failed", "unknown", "expired", "cancelled"})
 
-_ALLOWED_TRANSITIONS: dict[str, frozenset[str]] = {
-    "pending": frozenset({"claimed", "expired", "cancelled"}),
-    "claimed": frozenset({"pending", "sending", "cancelled"}),
-    # A lease that expires mid-send becomes `unknown`, never `pending`: the send
-    # may have been accepted, and `pending` is a licence to retry.
-    "sending": frozenset({"published", "pending", "failed", "unknown"}),
-    "unknown": frozenset({"published", "failed"}),
-    "published": frozenset(),
-    "failed": frozenset(),
-    "expired": frozenset(),
-    "cancelled": frozenset(),
-}
-
-
-class StoreConflict(Exception):
-    """A compare-and-set lost, or a key was reused with a different payload."""
+#: The transition table has one owner, `social_publish.states`; a LinkedIn row
+#: uses its restriction to the eight LinkedIn states (identical to the table
+#: this module declared through v0.7.0).
+_ALLOWED_TRANSITIONS: dict[str, frozenset[str]] = LINKEDIN_TRANSITIONS
 
 
 class PublicationKey(BaseModel):

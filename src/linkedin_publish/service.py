@@ -23,9 +23,11 @@ No database transaction spans a LinkedIn request.
 send one approved, due publication on a disabled binding, or with a still
 `unknown` capability, when the ledger holds an unconsumed, unexpired grant for
 exactly that publication, digest, binding and capability, issued to that same
-actor. The grant is consumed at the durable `sending` transition. The scheduler
-and the MCP never pass a commissioning actor, so they can never use a grant, and
-a binding held after a credential rotation honours none.
+actor. The grant is consumed immediately before the durable `sending`
+transition, and a grant that cannot be consumed sends nothing. The scheduler and
+the MCP never pass a commissioning actor, so they can never use a grant; since
+migration 0006 the runtime role cannot write `consumed_at` either, so the
+database refuses it too. A binding held after a credential rotation honours none.
 """
 
 from __future__ import annotations
@@ -333,6 +335,31 @@ class PublicationService:
             )
             raise
 
+        # --- the grant is spent BEFORE `sending`, or nothing goes out ---------
+        # Consuming first makes the database the judge (migration 0006): only
+        # the commissioning role may write `consumed_at`, so a runtime that was
+        # somehow handed a commissioning actor fails here, still `claimed`, and
+        # returns the record to `pending` — it never reaches `sending`. A grant
+        # spent by a send that then loses its claim is burnt, never re-used.
+        if grant_id is not None:
+            try:
+                consumed = await self._store.consume_grant(grant_id, at=moment)
+            except Exception:  # noqa: BLE001 - a refused write (e.g. a role without the grant) is a refusal
+                consumed = False
+            if not consumed:
+                await self._store.compare_and_set(
+                    publication_id,
+                    expected_state="claimed",
+                    expected_attempt_token=attempt_token,
+                    updates={"state": "pending", "attempt_token": None, "lease_deadline": None},
+                )
+                raise CapabilityUnavailable(
+                    f"the commissioning grant for {publication_id} could not be consumed by this identity; "
+                    "only the commissioning role may spend a grant, and only once",
+                    capability=claimed.draft.required_capability,
+                )
+            await self._event(publication_id, "grant_consumed", {"grant_id": grant_id})
+
         # --- durable `sending` BEFORE the request ----------------------------
         await self._store.compare_and_set(
             publication_id,
@@ -340,8 +367,6 @@ class PublicationService:
             expected_attempt_token=attempt_token,
             updates={"state": "sending"},
         )
-        if grant_id is not None:
-            await self._store.consume_grant(grant_id, at=moment)
         await self._event(publication_id, "sending", {"attempt_token": attempt_token})
 
         credentials = await self._credentials.get(binding.binding_id)

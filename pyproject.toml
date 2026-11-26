@@ -46,7 +46,7 @@ linkedin-publish = "linkedin_publish.cli:main"
 
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/linkedin_publish"]
+packages = ["src/linkedin_publish", "src/social_publish"]
 
 [tool.ruff]
 target-version = "py312"
@@ -69,7 +69,7 @@ venvPath = "."
 venv = ".venv"
 pythonVersion = "3.12"
 typeCheckingMode = "strict"
-include = ["src/linkedin_publish"]
+include = ["src/linkedin_publish", "src/social_publish"]
 # Click is partially typed — relax for the CLI entry point only.
 exclude = ["src/linkedin_publish/cli.py"]
 

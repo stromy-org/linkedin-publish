@@ -224,7 +224,10 @@ async def test_0005_upgrades_a_ledger_that_already_holds_a_binding(pool, monkeyp
             before = await PostgresBindingStore(upgraded).get("bind-1")
             assert before is not None and before.reenable_after_measure is False  # pre-0005 row loads
 
-            monkeypatch.setattr(pg, "migration_files", lambda: everything)
+            # Up to and including 0005 only: later migrations have their own upgrade tests.
+            monkeypatch.setattr(
+                pg, "migration_files", lambda: [p for p in everything if p.stem <= TOKEN_HEALTH_MIGRATION]
+            )
             assert await pg.apply_migrations(target, applied_by="pytest") == [TOKEN_HEALTH_MIGRATION]
             after = await PostgresBindingStore(upgraded).get("bind-1")
             assert after is not None
