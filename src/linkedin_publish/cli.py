@@ -38,6 +38,12 @@ credential and without a network call.
 `manifest import` stores a manifest as unapproved pending rows (the CLI twin of
 the hosted `import_manifest` tool); it approves nothing.
 
+`meta inspect --record`, `meta status`, `meta commission`, `meta publish-due` and
+`meta enable` are the Meta twins of the canary route (ORG-PLAN-652 C5a): token
+evidence from `debug_token` (a measured expiry or explicit no-expiry), a grant
+for one Meta publication and one `unknown` (operation, format), the one send as
+the commissioning actor, and enablement from that send's own receipt.
+
 `manifest validate` is fully offline: no credential is read, no network touched,
 no database opened. That is the command to reach for when checking a manifest.
 """
@@ -1285,6 +1291,518 @@ def db_plan() -> None:
     for path in migration_files():
         click.echo(f"{path.stem}  {path.name}")
     click.echo(f"runtime requires: {REQUIRED_MIGRATION}")
+
+
+# ------------------------------------------------------------------------ meta
+#
+# ORG-PLAN-652 C5a (F32): the Meta twin of the LinkedIn canary route. The
+# LinkedIn verbs above are unchanged; these act on Meta bindings only and name
+# their refusals. Same shape: `meta inspect --record` measures the token,
+# `meta commission` writes the one-shot grant (writer role), `meta publish-due`
+# sends that one publication as the commissioning actor (commissioner role),
+# `meta enable` enables exactly the receipt's (operation, format).
+
+
+@asynccontextmanager
+async def _social_store(dsn: str) -> AsyncIterator[Any]:
+    """Open the neutral Postgres ledger for one command. A seam for tests."""
+    from social_publish.postgres import PostgresSocialStore, require_social_schema
+
+    from .postgres import check_compatible, require_asyncpg
+
+    asyncpg = require_asyncpg()
+    pool = await asyncpg.create_pool(dsn, min_size=1, max_size=2, **_pg_connect_kwargs())
+    try:
+        await check_compatible(pool)
+        await require_social_schema(pool)
+        yield PostgresSocialStore(pool)
+    finally:
+        await pool.close()
+
+
+@asynccontextmanager
+async def _social_binding_store(dsn: str) -> AsyncIterator[Any]:
+    """Open the Meta binding store for one command. A seam for tests."""
+    from social_publish.postgres import PostgresSocialBindingStore, require_social_schema
+
+    from .postgres import check_compatible, require_asyncpg
+
+    asyncpg = require_asyncpg()
+    pool = await asyncpg.create_pool(dsn, min_size=1, max_size=2, **_pg_connect_kwargs())
+    try:
+        await check_compatible(pool)
+        await require_social_schema(pool)
+        yield PostgresSocialBindingStore(pool)
+    finally:
+        await pool.close()
+
+
+def _meta_signer() -> Any:
+    """The signed-URL issuer for media canaries. None here: the operator CLI holds no
+    media-signing authority, so a media canary is refused (`media_unavailable`) by name.
+    A seam for tests and for a host that wires its own issuer."""
+    return None
+
+
+def _meta_credentials_from_env() -> Any:
+    """META_ACCESS_TOKEN and META_CREDENTIAL_VERSION from the environment, never echoed."""
+    from social_publish import MetaCredentials
+
+    token = os.environ.get("META_ACCESS_TOKEN")
+    if not token:
+        click.echo(
+            "ABORT: set META_ACCESS_TOKEN in the environment (for example from a .env you filled yourself). "
+            "Credentials are never accepted as arguments.",
+            err=True,
+        )
+        sys.exit(2)
+    return MetaCredentials(
+        access_token=token, credential_version=os.environ.get("META_CREDENTIAL_VERSION") or "unversioned"
+    )
+
+
+async def _load_meta_binding(dsn: str, binding_id: str) -> Any:
+    async with _social_binding_store(dsn) as store:
+        binding = await store.get(binding_id)
+    if binding is None:
+        click.echo(f"ABORT: binding {binding_id!r} is not registered.", err=True)
+        sys.exit(1)
+    if binding.platform == "linkedin":
+        click.echo(
+            f"ABORT: {binding_id} is a LinkedIn binding; use the `account` verbs. `meta` acts on Meta bindings only.",
+            err=True,
+        )
+        sys.exit(1)
+    return binding
+
+
+def _show_meta_stored(record: Any) -> None:
+    """Print exactly what the ledger holds for one Meta publication."""
+    click.echo("--- stored publication (from the ledger) ---")
+    click.echo(f"  publication  {record.publication_id}   state {record.state}")
+    click.echo(f"  binding      {record.binding_id}   {record.platform}")
+    click.echo(f"  operation    {record.operation}   format {record.format}")
+    click.echo(f"  window       {record.scheduled_at.isoformat()} -> {record.expires_at.isoformat()}")
+    click.echo(f"  digest       {record.payload_digest}")
+    click.echo(json.dumps(record.payload, indent=2, ensure_ascii=False))
+    click.echo("--- end ---")
+
+
+def _refused(subject: str, problems: list[str]) -> None:
+    click.echo(f"REFUSED  {subject}:", err=True)
+    for problem in problems:
+        click.echo(f"  - {problem}", err=True)
+    sys.exit(1)
+
+
+@main.group()
+def meta() -> None:
+    """Meta (Facebook Page, Instagram) bindings: token evidence, commissioning, enablement."""
+
+
+@meta.command("inspect")
+@click.option("--binding", "binding_id", required=True, help="The registered Meta binding the token belongs to.")
+@click.option("--dsn", envvar="LINKEDIN_PUBLISH_DSN", required=True, help="Writer-role DSN with --record.")
+@click.option("--record", is_flag=True, help="Store the measured expiry (or no-expiry evidence) on the binding.")
+@click.option("--dry-run", is_flag=True, help="With --record: measure and show, write nothing.")
+@click.option("--json", "as_json", is_flag=True, help="Emit machine-readable output.")
+def meta_inspect(binding_id: str, dsn: str, record: bool, dry_run: bool, as_json: bool) -> None:
+    """Measure a Meta token with Graph `debug_token`: valid, which app, when it expires.
+
+    The token comes from META_ACCESS_TOKEN (and META_CREDENTIAL_VERSION, which
+    must be the version the binding names); META_INSPECTOR_TOKEN, when set, is
+    the token that performs the inspection instead of the token itself. Nothing
+    is written without --record. A reading of `expires_at: 0` on a valid token
+    of the binding's app is recorded as explicit no-expiry evidence; anything
+    else that carries no expiry is refused, never recorded as "no expiry".
+    Exit 0 measured healthy, 1 known bad or refused, 2 unknown.
+    """
+    from social_publish import inspect_meta_token
+
+    credentials = _meta_credentials_from_env()
+    binding = asyncio.run(_load_meta_binding(dsn, binding_id))
+    if credentials.credential_version != binding.credential_version:
+        click.echo(
+            f"ABORT: the environment holds credential version {credentials.credential_version!r} but binding "
+            f"{binding_id} names {binding.credential_version!r}. Set META_CREDENTIAL_VERSION to the version "
+            "this token is.",
+            err=True,
+        )
+        sys.exit(2)
+    if dry_run and not record:
+        click.echo("ABORT: --dry-run only qualifies --record.", err=True)
+        sys.exit(2)
+
+    async def _probe() -> Any:
+        async with _http_client() as http:
+            return await inspect_meta_token(
+                http,
+                credentials,
+                expected_app_id=binding.app_id,
+                now=datetime.now(timezone.utc),
+                inspector_token=os.environ.get("META_INSPECTOR_TOKEN") or None,
+            )
+
+    evidence = asyncio.run(_probe())
+    if evidence.is_valid is False or evidence.reason == "app_mismatch":
+        verdict = "BAD"
+    elif evidence.expires_at is not None and evidence.expires_at <= evidence.observed_at:
+        verdict = "BAD"
+    elif evidence.recordable:
+        verdict = "HEALTHY"
+    else:
+        verdict = "UNKNOWN"
+    report: dict[str, object] = {"verdict": verdict, "binding_id": binding_id, **evidence.as_dict(), "recorded": False}
+    if as_json:
+        click.echo(json.dumps(report, indent=2))
+    else:
+        click.echo(f"{verdict:<9}{binding_id}  ({binding.platform}, credential {binding.credential_version})")
+        click.echo(f"  token valid      {_tri(evidence.is_valid)}")
+        click.echo(f"  app              {evidence.app_id or '—'}  (binding app {binding.app_id})")
+        click.echo(f"  scopes           {' '.join(evidence.scopes) or '—'}")
+        if evidence.never_expires:
+            click.echo("  expires          never (debug_token expires_at=0; explicit no-expiry evidence)")
+        elif evidence.expires_at is not None:
+            click.echo(f"  expires          {evidence.expires_at.isoformat()}  (measured, not assumed)")
+        else:
+            click.echo("  expires          not measured")
+        if evidence.reason:
+            click.echo(f"  reason           {evidence.reason}")
+    if not record:
+        sys.exit({"HEALTHY": 0, "BAD": 1}.get(verdict, 2))
+    if not evidence.recordable or verdict == "BAD":
+        _refused(
+            f"{binding_id} records nothing",
+            [f"this reading carries no usable expiry fact ({evidence.reason or verdict.lower()})"],
+        )
+    click.echo(
+        f"Record on {binding_id}: "
+        + ("no-expiry evidence" if evidence.never_expires else f"expiry {evidence.expires_at.isoformat()}")
+        + f" observed {evidence.observed_at.isoformat()}"
+    )
+    if dry_run:
+        click.echo("dry run — nothing written")
+        return
+    click.confirm("Record this token evidence on the binding?", abort=True)
+
+    async def _write() -> Any:
+        async with _social_binding_store(dsn) as store:
+            return await store.record_token_evidence(binding_id, evidence)
+
+    try:
+        asyncio.run(_write())
+    except StoreConflict as exc:
+        click.echo(f"CONFLICT  {exc}", err=True)
+        sys.exit(1)
+    click.echo(f"recorded  {binding_id}")
+
+
+@meta.command("status")
+@click.option("--binding", "binding_id", required=True)
+@click.option("--dsn", envvar="LINKEDIN_PUBLISH_DSN", required=True, help="A DSN that can read the binding.")
+@click.option("--json", "as_json", is_flag=True, help="Emit machine-readable output.")
+def meta_status(binding_id: str, dsn: str, as_json: bool) -> None:
+    """The stored token evidence and capabilities of a Meta binding: no credential, no request.
+
+    Reports the measured expiry or the explicit no-expiry evidence, the 14-day
+    expiry warning (the same rule as LinkedIn's) and every capability state.
+    Exit 0 healthy, 1 blocked (expired), 2 unknown (never measured).
+    """
+    from social_publish import meta_token_status
+
+    binding = asyncio.run(_load_meta_binding(dsn, binding_id))
+    token = meta_token_status(binding, now=datetime.now(timezone.utc))
+    report: dict[str, object] = {
+        "binding_id": binding.binding_id,
+        "platform": binding.platform,
+        "publish_enabled": binding.publish_enabled,
+        "token": token,
+        "capabilities": [c.model_dump(mode="json") for c in binding.capabilities],
+    }
+    if as_json:
+        click.echo(json.dumps(report, indent=2))
+    else:
+        click.echo(f"{str(token['status']).upper():<9}{binding_id}  ({token['reason'] or 'measured healthy'})")
+        click.echo(f"  platform         {binding.platform}   publish_enabled {binding.publish_enabled}")
+        click.echo(f"  credential       {binding.credential_version}")
+        click.echo(
+            "  measured expiry  "
+            + ("never (explicit evidence)" if binding.token_never_expires else str(token["token_expires_at"] or "—"))
+        )
+        click.echo(f"  last measured    {token['token_observed_at'] or '—'}")
+        for item in binding.capabilities:
+            click.echo(f"  capability       {item.operation} {item.format}: {item.state}")
+        warning = token["expiry_warning"]
+        if isinstance(warning, dict):
+            click.echo(
+                f"  WARNING          {warning['code']}: {warning['days_remaining']} days "
+                f"(window {warning['window_days']})"
+            )
+    sys.exit({"healthy": 0, "blocked": 1}.get(str(token["status"]), 2))
+
+
+@meta.command("commission")
+@click.option("--publication", "publication_id", required=True)
+@click.option("--digest", "expected_digest", required=True, help="The digest you reviewed.")
+@click.option("--binding", "binding_id", required=True)
+@click.option("--operation", required=True, help="The publication's operation: schedule_post, publish_post or reply.")
+@click.option("--format", "fmt", required=True, help="The publication's format, e.g. text, feed_image, comment_reply.")
+@click.option("--actor", required=True, help="The operator commissioning identity.")
+@click.option("--dsn", envvar="LINKEDIN_PUBLISH_DSN", required=True, help="Writer-role DSN.")
+@click.option("--dry-run", is_flag=True, help="Run every check and show the grant, write nothing.")
+def meta_commission(
+    publication_id: str,
+    expected_digest: str,
+    binding_id: str,
+    operation: str,
+    fmt: str,
+    actor: str,
+    dsn: str,
+    dry_run: bool,
+) -> None:
+    """Write a one-shot grant for exactly one approved Meta canary publication.
+
+    The grant enables nothing. It licenses one send of this publication, while
+    its (operation, format) is still `unknown`, by `meta publish-due` acting as
+    the same actor, within GRANT_TTL. Refused by name when the capability is
+    already enabled or recorded unavailable, the binding is held, the digest is
+    not the stored one, the approval is missing, or a grant is already open.
+    """
+    from social_publish import GRANT_TTL, commission_problems, new_grant
+
+    binding = asyncio.run(_load_meta_binding(dsn, binding_id))
+    now = datetime.now(timezone.utc)
+
+    async def _read() -> tuple[Any, Any, Any]:
+        async with _social_store(dsn) as store:
+            record = await store.get(publication_id)
+            approval = await store.get_approval(publication_id) if record is not None else None
+            grant = await store.get_grant(publication_id) if record is not None else None
+        return record, approval, grant
+
+    record, approval, open_grant = asyncio.run(_read())
+    if record is not None:
+        _show_meta_stored(record)
+    problems = commission_problems(
+        binding,
+        record,
+        approval,
+        expected_digest=expected_digest,
+        operation=operation,
+        format=fmt,
+        open_grant=open_grant,
+        now=now,
+    )
+    if problems:
+        _refused(f"no grant for {publication_id}", problems)
+    grant = new_grant(record, actor=actor, now=now)
+    click.echo("Commissioning grant — this authorizes ONE real outward-facing Meta action.")
+    click.echo(f"  capability   {operation} {fmt} (unknown on {binding_id})")
+    click.echo(f"  actor        {actor}")
+    click.echo(f"  expires      {GRANT_TTL}")
+    if dry_run:
+        click.echo("dry run — nothing written")
+        return
+    click.confirm("Issue this grant?", abort=True)
+
+    async def _write() -> None:
+        async with _social_store(dsn) as store:
+            await store.put_grant(grant)
+
+    try:
+        asyncio.run(_write())
+    except StoreConflict as exc:
+        click.echo(f"CONFLICT  {exc}", err=True)
+        sys.exit(1)
+    click.echo(f"granted {grant.grant_id} (expires {grant.expires_at.isoformat()})")
+    click.echo(
+        f"next: `meta publish-due --binding {binding_id} --publication {publication_id} --actor {actor}` "
+        "with META_ACCESS_TOKEN in the environment, on the commissioner DSN"
+    )
+
+
+@meta.command("publish-due")
+@click.option("--binding", "binding_id", required=True)
+@click.option("--publication", "publication_id", required=True, help="The one commissioned publication to send.")
+@click.option("--actor", required=True, help="The commissioning identity the grant was issued to.")
+@click.option(
+    "--dsn",
+    envvar="LINKEDIN_PUBLISH_DSN",
+    required=True,
+    help="A DSN acting as linkedin_publish_commissioner (0006/0007): send transitions, the grant, Meta locators.",
+)
+@click.option("--dry-run", is_flag=True, help="Show the pre-flight and send nothing.")
+def meta_publish_due(binding_id: str, publication_id: str, actor: str, dsn: str, dry_run: bool) -> None:
+    """Send ONE commissioned Meta canary through the shared dispatcher, as the commissioning actor.
+
+    The same `DispatchService.dispatch_one` path the scheduler uses — claim,
+    every gate re-read, staging, durable `sending`, then the one write — with the
+    service built for this one actor, so it may use a grant issued to that actor
+    for exactly this publication, digest, binding and (operation, format). The
+    grant is consumed at `sending`. Exit 0 scheduled or published, 1 refused or
+    failed, 3 outcome unknown (never re-send; reconcile), 4 staging not ready
+    (an Instagram container still processing; the grant is unspent, re-run).
+    """
+    from social_publish import DispatchService, MetaGraphAdapter, OutcomeUnknown, SocialPublishError
+
+    binding = asyncio.run(_load_meta_binding(dsn, binding_id))
+
+    async def _read() -> tuple[Any, Any]:
+        async with _social_store(dsn) as store:
+            record = await store.get(publication_id)
+            grant = await store.get_grant(publication_id) if record is not None else None
+        return record, grant
+
+    record, grant = asyncio.run(_read())
+    if record is None:
+        click.echo(f"ABORT: no publication {publication_id} in the ledger.", err=True)
+        sys.exit(1)
+    _show_meta_stored(record)
+    if record.binding_id != binding_id:
+        click.echo(f"ABORT: {publication_id} belongs to binding {record.binding_id}, not {binding_id}.", err=True)
+        sys.exit(1)
+    if record.state != "pending":
+        click.echo(f"ABORT: {publication_id} is {record.state}; only a pending publication is sent.", err=True)
+        sys.exit(1)
+    credentials = _meta_credentials_from_env()
+    if credentials.credential_version != binding.credential_version:
+        click.echo(
+            f"ABORT: the environment holds credential version {credentials.credential_version!r} but binding "
+            f"{binding_id} names {binding.credential_version!r}. Set META_CREDENTIAL_VERSION, or rotate first.",
+            err=True,
+        )
+        sys.exit(2)
+    state = binding.capability_state(record.operation, record.format)
+    click.echo("Send — this is ONE real outward-facing Meta action.")
+    click.echo(f"  binding          {binding.binding_id}   {binding.platform}   adapter {binding.adapter}")
+    click.echo(f"  publish_enabled  {binding.publish_enabled}")
+    click.echo(f"  capability       {record.operation} {record.format} ({state})")
+    if grant is None:
+        click.echo("  grant            none")
+    else:
+        click.echo(
+            f"  grant            {grant.grant_id} for {grant.capability}, issued to {grant.issued_by}, "
+            f"expires {grant.expires_at.isoformat()}"
+        )
+    if dry_run:
+        click.echo("dry run — nothing sent")
+        return
+    click.confirm(f"Send publication {publication_id} now, as {actor}?", abort=True)
+
+    class _Tokens:
+        async def get(self, _binding: Any) -> Any:
+            return credentials
+
+    async def _send() -> tuple[str | None, Any, Any]:
+        async with _social_store(dsn) as store, _http_client() as http:
+            adapter = MetaGraphAdapter(http, _Tokens(), media=_meta_signer())
+            service = DispatchService(store, {"meta_graph": adapter}, actor=actor, commissioning_actor=actor)
+            try:
+                outcome = await service.dispatch_one(binding, publication_id)
+            except SocialPublishError as exc:
+                return None, exc, None
+            return outcome, None, await store.get(publication_id)
+
+    outcome, failure, stored = asyncio.run(_send())
+    if failure is not None:
+        detail = failure.as_dict()
+        verdict = "UNKNOWN" if isinstance(failure, OutcomeUnknown) else "REFUSED"
+        click.echo(f"{verdict}  {publication_id}: {detail.get('code')} — {failure.message}", err=True)
+        for key in ("http_status", "provider_code", "request_id", "operation", "format"):
+            if detail.get(key) is not None:
+                click.echo(f"  {key:<14} {detail[key]}", err=True)
+        if verdict == "UNKNOWN":
+            click.echo("  never re-send: the next tick reconciles it read-only", err=True)
+            sys.exit(3)
+        sys.exit(1)
+    if outcome == "waiting":
+        click.echo(f"WAITING  {publication_id}: staging is not ready; the grant is unspent — re-run later")
+        sys.exit(4)
+    if outcome not in ("scheduled", "published"):
+        click.echo(f"REFUSED  {publication_id}: ended {outcome}", err=True)
+        sys.exit(1)
+    click.echo(f"{outcome}  {publication_id}")
+    click.echo(f"  remote_id     {stored.remote_id if stored else '—'}")
+    click.echo(f"  permalink     {stored.permalink if stored else '—'}")
+    if state != "enabled":
+        click.echo(
+            f"next: check it on Meta, then `meta enable --binding {binding_id} --operation {record.operation} "
+            f"--format {record.format} --evidence {publication_id}`"
+        )
+
+
+@meta.command("enable")
+@click.option("--binding", "binding_id", required=True)
+@click.option("--operation", required=True)
+@click.option("--format", "fmt", required=True)
+@click.option(
+    "--evidence",
+    "evidence_publication_id",
+    required=True,
+    help="The canary publication whose recorded receipt proves the capability.",
+)
+@click.option("--dsn", envvar="LINKEDIN_PUBLISH_DSN", required=True, help="Writer-role DSN.")
+@click.option("--dry-run", is_flag=True, help="Show the change and write nothing.")
+def meta_enable(
+    binding_id: str, operation: str, fmt: str, evidence_publication_id: str, dsn: str, dry_run: bool
+) -> None:
+    """Enable ONE Meta (operation, format) from its canary receipt, and turn publishing on.
+
+    Refuses unless the evidence is the receipt of a send this ledger made on this
+    binding — `published`, or for a Facebook schedule `scheduled` after its
+    read-back — of exactly this (operation, format), the pair is still
+    `unknown`, the binding is not held, and the token evidence is recorded and
+    not expired. An image canary enables that image format and nothing else.
+    """
+    from social_publish import enable_problems
+
+    binding = asyncio.run(_load_meta_binding(dsn, binding_id))
+
+    async def _read() -> tuple[Any, list[Any]]:
+        async with _social_store(dsn) as store:
+            evidence = await store.get(evidence_publication_id)
+            events = await store.events(evidence_publication_id) if evidence is not None else []
+        return evidence, events
+
+    evidence, events = asyncio.run(_read())
+    now = datetime.now(timezone.utc)
+    problems = enable_problems(binding, evidence, events, operation=operation, format=fmt, now=now)
+    if problems:
+        _refused(f"{binding_id} {operation} {fmt} stays {binding.capability_state(operation, fmt)}", problems)
+    observed = evidence.published_at or evidence.updated_at
+    click.echo("First enablement from a canary receipt.")
+    click.echo(f"  binding            {binding.binding_id}   credential {binding.credential_version}")
+    click.echo(f"  evidence           {evidence.publication_id}   {evidence.state}   remote {evidence.remote_id}")
+    click.echo(f"  capability         {operation} {fmt}: unknown  ->  enabled")
+    click.echo(f"  publish_enabled    {binding.publish_enabled}  ->  True")
+    others = [
+        f"{c.operation} {c.format}={c.state}"
+        for c in binding.capabilities
+        if (c.operation, c.format) != (operation, fmt)
+    ]
+    click.echo(f"  other capabilities {', '.join(others) or 'none (all unknown)'}  (unchanged)")
+    if dry_run:
+        click.echo("dry run — nothing written")
+        return
+    click.confirm(f"Enable {operation} {fmt} on {binding_id} and turn publishing on?", abort=True)
+
+    async def _write() -> Any:
+        async with _social_binding_store(dsn) as store:
+            return await store.enable_capability(
+                binding_id,
+                operation=operation,
+                format=fmt,
+                evidence_publication_id=evidence.publication_id,
+                observed_at=observed,
+                expected_version=binding.credential_version,
+            )
+
+    try:
+        asyncio.run(_write())
+    except StoreConflict as exc:
+        click.echo(f"CONFLICT  {exc}", err=True)
+        sys.exit(1)
+    click.echo(f"enabled  {binding_id}  {operation} {fmt} (evidence {evidence.publication_id}); publishing ON")
 
 
 if __name__ == "__main__":

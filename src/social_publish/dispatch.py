@@ -26,6 +26,20 @@ What the core guarantees, whatever the adapter:
    and reconciles unknowns (receipts are retained, pending external schedules are
    reconciled), but claims nothing and sends nothing.
 
+7. **A commissioning grant licenses one send, and only for this sender.** A
+   service built with `commissioning_actor` (the operator CLI's
+   `meta publish-due`, never the scheduler) may send one approved, due record
+   whose (operation, format) is still `unknown` — on a disabled binding too —
+   when the ledger holds an unconsumed, unexpired grant for exactly that
+   record, digest, binding, `operation:format` and actor. The grant never
+   licenses an `unavailable` capability, a binding held after a rotation, or
+   any other pair, and it is consumed immediately before the durable `sending`
+   transition: a grant that cannot be consumed (on Postgres, by any role but
+   the commissioner) sends nothing and the record returns to `pending`.
+8. **A known-expired token blocks the write.** A Meta binding whose measured
+   `token_expires_at` is past is refused before transport (`token_expired`);
+   every tick reports the token verdict and the 14-day expiry warning.
+
 No database transaction spans a provider request.
 """
 
@@ -38,9 +52,10 @@ from datetime import UTC, datetime, timedelta
 
 from .adapters.base import Resolution, SocialAdapter
 from .errors import CapabilityRefused, Deferred, OutcomeUnknown, Refused, SocialPublishError, StoreConflict
-from .ledger import SocialEvent, SocialStore
+from .ledger import SocialEvent, SocialGrant, SocialStore
 from .model import SocialBinding, SocialRecord
 from .states import SocialState
+from .tokens import meta_token_status
 
 __all__ = ["DEFAULT_LEASE", "DispatchService", "PolicyGate", "SocialTick"]
 
@@ -73,6 +88,8 @@ class SocialTick:
     disabled: bool = False
     dry_run: bool = False
     failures: list[dict[str, object]] = field(default_factory=_no_failures)
+    #: The binding's stored token verdict and expiry warning (`meta_token_status`).
+    token: dict[str, object] | None = None
 
     @property
     def outcome(self) -> str:
@@ -99,6 +116,8 @@ class SocialTick:
             "disabled": self.disabled,
             "dry_run": self.dry_run,
             "failures": self.failures,
+            "token_health": None if self.token is None else self.token["status"],
+            "token_expiry_warning": None if self.token is None else self.token["expiry_warning"],
         }
 
 
@@ -113,7 +132,11 @@ class DispatchService:
         lease: timedelta = DEFAULT_LEASE,
         actor: str = "scheduler",
         policy_gate: PolicyGate | None = None,
+        commissioning_actor: str | None = None,
     ) -> None:
+        if commissioning_actor is not None and not commissioning_actor.strip():
+            raise ValueError("commissioning_actor must name the operator identity the grant was issued to")
+        self._commissioning_actor = commissioning_actor
         self._store = store
         self._adapters = dict(adapters)
         self._lease = lease
@@ -131,7 +154,10 @@ class DispatchService:
             raise Refused("adapter_unavailable", f"no {binding.adapter} adapter serves {binding.platform} here")
         return adapter
 
-    def require_capability(self, binding: SocialBinding, record: SocialRecord, adapter: SocialAdapter) -> None:
+    def require_capability(
+        self, binding: SocialBinding, record: SocialRecord, adapter: SocialAdapter, *, licensed: bool = False
+    ) -> None:
+        """Exact capability. `licensed` (a usable grant) admits an `unknown` pair, never an `unavailable` one."""
         pair = (record.operation, record.format)
         if pair not in adapter.declared():
             raise CapabilityRefused(
@@ -140,6 +166,8 @@ class DispatchService:
                 format=record.format,
             )
         state = binding.capability_state(record.operation, record.format)
+        if state == "unknown" and licensed:
+            return
         if state != "enabled":
             raise CapabilityRefused(
                 f"{record.operation} {record.format} is {state} on binding {binding.binding_id}; it is enabled "
@@ -155,6 +183,7 @@ class DispatchService:
     ) -> SocialTick:
         moment = (now or datetime.now(UTC)).astimezone(UTC)
         result = SocialTick(dry_run=dry_run, disabled=not binding.publish_enabled)
+        result.token = meta_token_status(binding, now=moment) if binding.platform != "linkedin" else None
         adapter = self.adapter_for(binding)
         records = await self._store.all_for_binding(binding.binding_id)
 
@@ -232,7 +261,7 @@ class DispatchService:
         record = await self._require(publication_id)
         if record.binding_id != binding.binding_id:
             raise Refused("binding_mismatch", f"{publication_id} belongs to another binding", final=True)
-        if not binding.publish_enabled:
+        if not binding.publish_enabled and await self._licence(binding, record, moment) is None:
             raise Refused("publish_disabled", f"publishing is disabled on binding {binding.binding_id}")
         adapter = self.adapter_for(binding)
         if record.state != "pending":
@@ -253,7 +282,7 @@ class DispatchService:
         await self._event(publication_id, "claimed", {"attempt_token": token})
 
         try:
-            await self._gates(binding, claimed, adapter, moment)
+            grant_id = await self._gates(binding, claimed, adapter, moment)
         except SocialPublishError as exc:
             await self._release(claimed, token, exc)
             raise
@@ -309,6 +338,27 @@ class DispatchService:
         except SocialPublishError as exc:
             await self._release(claimed, token, exc)
             raise
+
+        # --- the grant is spent BEFORE `sending`, or nothing goes out --------
+        # Consuming first makes the database the judge (migration 0006): only the
+        # commissioner may write `consumed_at`, so any other identity that was
+        # handed a commissioning actor fails here, still `claimed`, and the record
+        # returns to `pending`. A grant spent by a send that then loses its claim
+        # is burnt, never re-used.
+        if grant_id is not None:
+            try:
+                consumed = await self._store.consume_grant(grant_id, at=moment)
+            except Exception:  # noqa: BLE001 - a refused write (a role without the grant) is a refusal
+                consumed = False
+            if not consumed:
+                refusal = Refused(
+                    "grant_unusable",
+                    f"the commissioning grant for {publication_id} could not be consumed by this identity; "
+                    "only the commissioning role may spend a grant, and only once",
+                )
+                await self._release(claimed, token, refusal)
+                raise refusal
+            await self._event(publication_id, "grant_consumed", {"grant_id": grant_id})
 
         # --- durable `sending` BEFORE the write -------------------------------
         claimed = await self._cas(claimed, token, "claimed", {"state": "sending"})
@@ -381,12 +431,48 @@ class DispatchService:
     # ---------------------------------------------------------------- gates
 
     def _offline_gates(
-        self, binding: SocialBinding, record: SocialRecord, adapter: SocialAdapter, now: datetime
+        self,
+        binding: SocialBinding,
+        record: SocialRecord,
+        adapter: SocialAdapter,
+        now: datetime,
+        *,
+        licensed: bool = False,
     ) -> None:
-        self.require_capability(binding, record, adapter)
+        self.require_capability(binding, record, adapter, licensed=licensed)
+        # LinkedIn keeps its own known-bad gate in `PublicationService`; this is the Meta one.
+        expired = binding.token_expires_at is not None and binding.token_expires_at <= now
+        if binding.platform != "linkedin" and expired:
+            assert binding.token_expires_at is not None  # noqa: S101 - narrowed above
+            raise Refused(
+                "token_expired",
+                f"binding {binding.binding_id}'s token expired at {binding.token_expires_at.isoformat()} "
+                "(measured); re-mint, rotate and re-inspect before any write",
+            )
         adapter.validate(binding, record, now)
 
-    async def _gates(self, binding: SocialBinding, record: SocialRecord, adapter: SocialAdapter, now: datetime) -> None:
+    async def _licence(self, binding: SocialBinding, record: SocialRecord, now: datetime) -> SocialGrant | None:
+        """The grant that licenses this one send by this service, or None.
+
+        None unless this service was built with a commissioning actor (the
+        scheduler never is), the binding is not held after a rotation, the
+        record's (operation, format) is still `unknown` on the binding, and the
+        stored grant matches the record, digest, binding, pair and actor,
+        unconsumed and unexpired.
+        """
+        if self._commissioning_actor is None or binding.reenable_after_measure:
+            return None
+        if binding.capability_state(record.operation, record.format) != "unknown":
+            return None
+        grant = await self._store.get_grant(record.publication_id)
+        if grant is None or not grant.is_usable(record, actor=self._commissioning_actor, now=now):
+            return None
+        return grant
+
+    async def _gates(
+        self, binding: SocialBinding, record: SocialRecord, adapter: SocialAdapter, now: datetime
+    ) -> str | None:
+        """Every gate, re-read on the claimed row. Returns the grant id this send spends, if any."""
         approval = await self._store.get_approval(record.publication_id)
         if approval is None or not approval.is_active(digest=record.payload_digest, now=now):
             raise Refused("approval_missing", f"{record.publication_id} has no active approval for its payload")
@@ -394,9 +480,13 @@ class DispatchService:
             raise Refused("approval_binding_mismatch", "the approval was issued for a different binding", final=True)
         if not record.is_due(now):
             raise Refused("outside_window", f"{record.publication_id} is outside its approved window")
-        self._offline_gates(binding, record, adapter, now)
+        grant = await self._licence(binding, record, now)
+        if not binding.publish_enabled and grant is None:
+            raise Refused("publish_disabled", f"publishing is disabled on binding {binding.binding_id}")
+        self._offline_gates(binding, record, adapter, now, licensed=grant is not None)
         if self._policy_gate is not None:
             await self._policy_gate(binding, record, now)
+        return grant.grant_id if grant is not None else None
 
     # ------------------------------------------------------------- recovery
 

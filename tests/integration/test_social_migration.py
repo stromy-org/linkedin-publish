@@ -27,6 +27,7 @@ asyncpg = pytest.importorskip("asyncpg")
 NOW = datetime(2026, 12, 3, 10, 0, tzinfo=UTC)
 PERSON = "urn:li:person:AbC123xyz"
 SOCIAL = "0006_social_platforms"
+META = "0007_meta_commissioning"
 
 #: sha256 of each migration file at pinned commit 548021b (the v0.4.2 shape) and v0.7.0.
 PINNED = {
@@ -177,7 +178,7 @@ async def test_a_populated_ledger_upgrades_and_old_readers_still_read_it(pool, m
     async with scratch(pool, monkeypatch, upto=start) as (target, db):
         before = await populate_linkedin(db)
         applied = await pg.apply_migrations(target, applied_by="pytest")
-        assert applied[-1] == SOCIAL
+        assert applied[-2:] == [SOCIAL, META]
         await assert_linkedin_intact(db, before)
         row = await db.fetchrow("SELECT platform FROM linkedin_publish.account_bindings")
         assert row["platform"] == "linkedin"
@@ -217,7 +218,7 @@ async def test_a_failed_0006_rolls_back_whole_and_a_retry_applies(pool, monkeypa
         await db.execute(
             "UPDATE linkedin_publish.account_bindings SET author_urn='urn:li:person:fixed' WHERE binding_id='bind-bad'"
         )
-        assert await pg.apply_migrations(target, applied_by="pytest") == [SOCIAL]
+        assert await pg.apply_migrations(target, applied_by="pytest") == [SOCIAL, META]
         await assert_linkedin_intact(db, before)
         # Re-running the file body itself is harmless: every statement is idempotent.
         sql = next(p for p in pg.migration_files() if p.stem == SOCIAL).read_text()

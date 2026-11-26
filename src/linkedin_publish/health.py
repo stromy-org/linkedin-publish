@@ -32,8 +32,15 @@ from typing import Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict
 
+from social_publish.model import SocialBinding
+
 from .auth import TokenObservation
 from .models import AccountBinding
+
+#: Either namespace's binding: the expiry rules read only `credential_version`
+#: and `token_expires_at`, which both carry. A Meta binding's expiry is the one
+#: `meta inspect --record` measured (`social_publish.tokens`).
+MeasuredBinding = AccountBinding | SocialBinding
 
 __all__ = [
     "DAILY_REFRESH",
@@ -137,7 +144,7 @@ def sanitize(observation: TokenObservation) -> TokenObservation:
 
 
 def measured_expiry(
-    binding: AccountBinding, observation: TokenObservation | None = None
+    binding: MeasuredBinding, observation: TokenObservation | None = None
 ) -> tuple[datetime | None, Source | Literal["binding"]]:
     """The best measured expiry for the binding's CURRENT credential version.
 
@@ -178,7 +185,7 @@ class ExpiryWarning(BaseModel):
 
 
 def expiry_warning(
-    binding: AccountBinding,
+    binding: MeasuredBinding,
     observation: TokenObservation | None = None,
     *,
     now: datetime,

@@ -32,9 +32,11 @@ __all__ = [
     "LIVE_STATES",
     "SocialApproval",
     "SocialEvent",
+    "SocialGrant",
     "SocialStore",
     "StoreConflict",
     "UPDATABLE",
+    "capability_key",
 ]
 
 #: Rows that still own their intent: everything but a definite non-send.
@@ -78,6 +80,52 @@ class SocialApproval(BaseModel):
         if self.revoked_at is not None and self.revoked_at <= now:
             return False
         return self.payload_digest == digest
+
+
+def capability_key(operation: str, format: str) -> str:  # noqa: A002 - the domain word
+    """How a Meta (operation, format) is named in `commissioning_grants.capability`.
+
+    LinkedIn grants name a bare capability (`text`, `image`); a Meta grant names
+    the exact pair, `operation:format`, so a grant for one format can never be
+    read as a grant for another.
+    """
+    return f"{operation}:{format}"
+
+
+class SocialGrant(BaseModel):
+    """A one-shot licence to send ONE stored Meta publication while its capability is `unknown`.
+
+    The same row shape as LinkedIn's `CommissioningGrant` (table
+    `commissioning_grants`): one publication, one digest, one binding, one
+    `operation:format` capability and the commissioning actor it was issued to.
+    Issued by the writer (`meta commission`), consumed by the commissioner at
+    the durable `sending` transition. A scheduler cannot create one, and an
+    unknown outcome cannot renew one.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    grant_id: str
+    publication_id: str
+    payload_digest: str
+    binding_id: str
+    capability: str
+    issued_by: str
+    issued_at: datetime
+    expires_at: datetime
+    consumed_at: datetime | None = None
+
+    def is_usable(self, record: SocialRecord, *, actor: str, now: datetime) -> bool:
+        """Whether this grant licenses exactly this record's send, by exactly this actor, now."""
+        return (
+            self.consumed_at is None
+            and now < self.expires_at
+            and self.publication_id == record.publication_id
+            and self.payload_digest == record.payload_digest
+            and self.binding_id == record.binding_id
+            and self.capability == capability_key(record.operation, record.format)
+            and self.issued_by == actor
+        )
 
 
 class SocialEvent(BaseModel):
@@ -133,6 +181,18 @@ class SocialStore(Protocol):
 
     async def get_approval(self, publication_id: str) -> SocialApproval | None: ...
 
+    async def get_grant(self, publication_id: str) -> SocialGrant | None:
+        """The publication's open (unconsumed) commissioning grant, if any."""
+        ...
+
+    async def put_grant(self, grant: SocialGrant) -> None:
+        """Store a grant. Writer role only; at most one open grant per publication."""
+        ...
+
+    async def consume_grant(self, grant_id: str, *, at: datetime) -> bool:
+        """Spend a grant atomically. False when it was already spent (or never existed)."""
+        ...
+
 
 def check_updates(updates: dict[str, object]) -> None:
     unknown = set(updates) - UPDATABLE
@@ -178,6 +238,7 @@ class InMemorySocialStore:
         self._records: dict[str, SocialRecord] = {}
         self._approvals: dict[str, SocialApproval] = {}
         self._events: list[SocialEvent] = []
+        self._grants: dict[str, SocialGrant] = {}
         self._lock = asyncio.Lock()
         self.bindings: dict[str, SocialBinding] = {b.binding_id: b for b in bindings or []}
 
@@ -265,6 +326,31 @@ class InMemorySocialStore:
 
     async def get_approval(self, publication_id: str) -> SocialApproval | None:
         return self._approvals.get(publication_id)
+
+    async def get_grant(self, publication_id: str) -> SocialGrant | None:
+        for grant in self._grants.values():
+            if grant.publication_id == publication_id and grant.consumed_at is None:
+                return grant
+        return None
+
+    async def put_grant(self, grant: SocialGrant) -> None:
+        async with self._lock:
+            if grant.grant_id in self._grants:
+                raise StoreConflict(f"grant {grant.grant_id} already exists")
+            if grant.publication_id not in self._records:
+                raise StoreConflict(f"unknown publication {grant.publication_id}")
+            for other in self._grants.values():  # migration 0001's one-open index
+                if other.publication_id == grant.publication_id and other.consumed_at is None:
+                    raise StoreConflict(f"{grant.publication_id} already holds an open grant ({other.grant_id})")
+            self._grants[grant.grant_id] = grant
+
+    async def consume_grant(self, grant_id: str, *, at: datetime) -> bool:
+        async with self._lock:
+            grant = self._grants.get(grant_id)
+            if grant is None or grant.consumed_at is not None:
+                return False
+            self._grants[grant_id] = grant.model_copy(update={"consumed_at": at})
+            return True
 
     async def revoke(self, publication_id: str, *, by: str, at: datetime) -> None:
         """Test and operator helper: revoke the approval of one publication."""

@@ -21,6 +21,13 @@ uncertain response.
 Client-neutral by construction, like `linkedin_publish`: nothing here reads
 client data, resolves a client slug or knows what a brand is.
 
+**Commissioning** (`commissioning`, `bindings`, `tokens`) mirrors LinkedIn's
+canary model for Meta: a short-lived grant for one stored publication and one
+`unknown` (operation, format), usable only by a `DispatchService` built with a
+commissioning actor and consumed at `sending`; enablement only from that
+send's own published (or scheduled-and-read-back) receipt; and token-expiry
+evidence measured from Meta's `debug_token`, including explicit no-expiry.
+
 `social_publish.linkedin` re-exports the supported LinkedIn API.
 """
 
@@ -35,8 +42,18 @@ from .adapters import (
     SocialAdapter,
     StageResult,
 )
-from .approval import ImportSource, TrustedKey, import_c3_approval, load_trust, verify_record
+from .approval import (
+    C3_HANDOVER_VERSION,
+    ImportSource,
+    TrustedKey,
+    import_c3_approval,
+    import_c3_handover,
+    load_trust,
+    verify_record,
+)
+from .bindings import InMemorySocialBindingStore, SocialBindingStore
 from .canonical import canonical_digest, canonical_json
+from .commissioning import GRANT_TTL, commission_problems, enable_problems, enabled_binding, new_grant
 from .dispatch import DispatchService, PolicyGate, SocialTick
 from .errors import (
     ApprovalRefused,
@@ -47,7 +64,15 @@ from .errors import (
     SocialPublishError,
     StoreConflict,
 )
-from .ledger import ImportOutcome, InMemorySocialStore, SocialApproval, SocialEvent, SocialStore
+from .ledger import (
+    ImportOutcome,
+    InMemorySocialStore,
+    SocialApproval,
+    SocialEvent,
+    SocialGrant,
+    SocialStore,
+    capability_key,
+)
 from .model import (
     META_PAYLOAD_VERSION,
     MetaAccount,
@@ -61,10 +86,13 @@ from .model import (
     meta_payload_digest,
 )
 from .states import NEVER_FRESH, TRANSITIONS, SocialState
+from .tokens import MetaTokenEvidence, inspect_meta_token, meta_token_status, parse_debug_token
 
-__version__ = "0.8.0"
+__version__ = "0.9.0"
 
 __all__ = [
+    "C3_HANDOVER_VERSION",
+    "GRANT_TTL",
     "ApprovalRefused",
     "CapabilityRefused",
     "Deferred",
@@ -72,6 +100,7 @@ __all__ = [
     "GRAPH_VERSION",
     "ImportOutcome",
     "ImportSource",
+    "InMemorySocialBindingStore",
     "InMemorySocialStore",
     "META_PAYLOAD_VERSION",
     "MetaAccount",
@@ -79,6 +108,7 @@ __all__ = [
     "MetaGraphAdapter",
     "MetaParent",
     "MetaPayload",
+    "MetaTokenEvidence",
     "MetaTokenProvider",
     "NEVER_FRESH",
     "OperationCapability",
@@ -92,7 +122,9 @@ __all__ = [
     "SocialAdapter",
     "SocialApproval",
     "SocialBinding",
+    "SocialBindingStore",
     "SocialEvent",
+    "SocialGrant",
     "SocialKey",
     "SocialPublishError",
     "SocialRecord",
@@ -106,8 +138,17 @@ __all__ = [
     "__version__",
     "canonical_digest",
     "canonical_json",
+    "capability_key",
+    "commission_problems",
+    "enable_problems",
+    "enabled_binding",
     "import_c3_approval",
+    "import_c3_handover",
+    "inspect_meta_token",
     "load_trust",
     "meta_payload_digest",
+    "meta_token_status",
+    "new_grant",
+    "parse_debug_token",
     "verify_record",
 ]
