@@ -33,6 +33,7 @@ from .auth import TokenObservation
 from .bindings import (
     as_registration,
     conflict_message,
+    enabled,
     registration_conflicts,
     require_observation_version,
     rotated,
@@ -40,7 +41,7 @@ from .bindings import (
 from .exceptions import DependencyError
 from .health import ObservationCacheUnavailable, sanitize
 from .limits import BudgetKey, QuotaExhausted
-from .models import AccountBinding
+from .models import AccountBinding, Capability
 from .store import (
     ApprovalRecord,
     CommissioningGrant,
@@ -625,6 +626,50 @@ class PostgresBindingStore:
         if row is None:
             raise StoreConflict(f"binding {binding_id!r} changed since it was checked; re-run the check")
         return _as_binding(row)
+
+    async def enable_capability(
+        self,
+        binding_id: str,
+        *,
+        capability: Capability,
+        evidence_publication_id: str,
+        observed_at: datetime,
+        expected_version: str,
+    ) -> AccountBinding:
+        # Read-modify-write under a row lock: the capabilities column is jsonb, and
+        # comparing it textually against a re-serialization would be fragile. The
+        # lock makes "still unknown, same credential, not held" and the write one
+        # decision. Needs the writer's UPDATE on account_bindings (0002).
+        async with self._pool.acquire() as connection:
+            async with connection.transaction():
+                row = await connection.fetchrow(
+                    "SELECT * FROM linkedin_publish.account_bindings WHERE binding_id = $1 FOR UPDATE",
+                    binding_id,
+                )
+                if row is None:
+                    raise StoreConflict(f"binding {binding_id!r} is not registered")
+                existing = _as_binding(row)
+                if existing.credential_version != expected_version:
+                    raise StoreConflict(f"binding {binding_id!r} changed since it was checked; re-run the check")
+                target = enabled(
+                    existing,
+                    capability=capability,
+                    evidence_publication_id=evidence_publication_id,
+                    observed_at=observed_at,
+                )
+                written = await connection.fetchrow(
+                    """
+                    UPDATE linkedin_publish.account_bindings
+                       SET capabilities = $2::jsonb, publish_enabled = true, updated_at = now()
+                     WHERE binding_id = $1
+                    RETURNING *
+                    """,
+                    binding_id,
+                    json.dumps([status.model_dump(mode="json") for status in target.capabilities]),
+                )
+        if written is None:  # pragma: no cover - the row is locked above
+            raise StoreConflict(f"binding {binding_id!r} was not updated")
+        return _as_binding(written)
 
 
 class PostgresObservationCache:

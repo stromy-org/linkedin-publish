@@ -106,3 +106,47 @@ async def test_the_runtime_role_cannot_register_a_binding(pool) -> None:  # noqa
             await PostgresBindingStore(runtime).register(binding())
     finally:
         await runtime.close()
+
+
+async def test_the_writer_enables_one_capability_from_a_receipt(writer: PostgresBindingStore) -> None:
+    """`account enable` (v0.6.0): the jsonb row round-trips, other capabilities untouched."""
+    await writer.register(binding())
+    updated = await writer.enable_capability(
+        "bind-reg", capability="text", evidence_publication_id="pub-canary", observed_at=NOW, expected_version="v1"
+    )
+    assert updated.publish_enabled is True
+    assert updated.capability_state("text") == "enabled"
+    assert updated.capability_state("image") == "unknown"
+
+    stored = await writer.get("bind-reg")
+    assert stored is not None
+    status = next(item for item in stored.capabilities if item.capability == "text")
+    assert status.evidence_publication_id == "pub-canary"
+    assert status.observed_at == NOW
+
+    with pytest.raises(StoreConflict, match="enabled"):
+        await writer.enable_capability(
+            "bind-reg", capability="text", evidence_publication_id="pub-x", observed_at=NOW, expected_version="v1"
+        )
+    with pytest.raises(StoreConflict, match="changed since it was checked"):
+        await writer.enable_capability(
+            "bind-reg", capability="image", evidence_publication_id="pub-x", observed_at=NOW, expected_version="v0"
+        )
+
+
+async def test_the_runtime_role_cannot_enable_a_capability(writer: PostgresBindingStore, pool) -> None:  # noqa: ANN001
+    await writer.register(binding())
+
+    async def as_runtime(connection) -> None:  # noqa: ANN001
+        await connection.execute("SET ROLE linkedin_publish_runtime")
+
+    runtime = await asyncpg.create_pool(
+        os.environ["LINKEDIN_PUBLISH_TEST_DSN"], min_size=1, max_size=1, init=as_runtime
+    )
+    try:
+        with pytest.raises(asyncpg.exceptions.InsufficientPrivilegeError):
+            await PostgresBindingStore(runtime).enable_capability(
+                "bind-reg", capability="text", evidence_publication_id="p", observed_at=NOW, expected_version="v1"
+            )
+    finally:
+        await runtime.close()

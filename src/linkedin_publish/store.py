@@ -193,13 +193,30 @@ class CommissioningGrant(BaseModel):
     expires_at: datetime
     consumed_at: datetime | None = None
 
-    def is_usable(self, *, publication_id: str, digest: str, binding_id: str, now: datetime) -> bool:
+    def is_usable(
+        self,
+        *,
+        publication_id: str,
+        digest: str,
+        binding_id: str,
+        capability: str,
+        actor: str,
+        now: datetime,
+    ) -> bool:
+        """Whether this grant licenses exactly this send, by exactly this actor, now.
+
+        Every field must match: the publication, its digest, the binding, the
+        capability the draft needs, and the commissioning actor the grant was
+        issued to. A consumed or expired grant licenses nothing.
+        """
         return (
             self.consumed_at is None
             and now < self.expires_at
             and self.publication_id == publication_id
             and self.payload_digest == digest
             and self.binding_id == binding_id
+            and self.capability == capability
+            and self.issued_by == actor
         )
 
 
