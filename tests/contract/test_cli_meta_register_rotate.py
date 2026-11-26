@@ -131,7 +131,16 @@ def register_args(**overrides: str) -> list[str]:
     return ["meta", "register", *(part for pair in values.items() for part in pair)]
 
 
-ROTATE = ["meta", "rotate", "--binding", BIND, "--credential-ref", "kv-meta-fixture-brand", "--credential-version", "v2"]
+ROTATE = [
+    "meta",
+    "rotate",
+    "--binding",
+    BIND,
+    "--credential-ref",
+    "kv-meta-fixture-brand",
+    "--credential-version",
+    "v2",
+]
 REENABLE = ["meta", "reenable", "--binding", BIND]
 
 
@@ -276,7 +285,9 @@ def test_rotate_refuses_a_stale_view_the_same_version_and_a_linkedin_binding(wor
 
     li = neutral_binding(li_binding())
     world["bindings"]._bindings[li.binding_id] = li  # type: ignore[attr-defined]  # noqa: SLF001
-    code, out = run("meta", "rotate", "--binding", li.binding_id, "--credential-ref", "kv", "--credential-version", "v2")
+    code, out = run(
+        "meta", "rotate", "--binding", li.binding_id, "--credential-ref", "kv", "--credential-version", "v2"
+    )
     assert code == 1 and "use the `account` verbs" in out
 
 
@@ -290,7 +301,9 @@ def test_a_second_rotation_before_reenabling_keeps_the_hold_and_a_never_enabled_
 
     fresh = meta_binding("instagram_professional", publish_enabled=False, binding_id="bind-ig-never")
     asyncio.run(world["bindings"].register(fresh))  # type: ignore[attr-defined]
-    code, out = run("meta", "rotate", "--binding", "bind-ig-never", "--credential-ref", "kv", "--credential-version", "v2")
+    code, out = run(
+        "meta", "rotate", "--binding", "bind-ig-never", "--credential-ref", "kv", "--credential-version", "v2"
+    )
     assert code == 0
     never = stored(world, "bind-ig-never")
     assert never.reenable_after_measure is False and never.publish_enabled is False

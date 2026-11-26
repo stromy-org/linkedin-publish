@@ -261,6 +261,30 @@ signed-URL issuer. A C3 operation is handed over with
 `social_publish.import_c3_handover(store, binding, doc, ...)`, where `doc` is
 `publish.py export-source`'s `social-ops-handover/1` document.
 
+### Meta registration, rotation and rights (v0.10.0)
+
+```bash
+# Registers DISABLED with every capability unknown: configuration, not permission.
+# Refuses a non-Meta platform, a non-numeric account id, a duplicate id or account.
+# No token on the command line; --credential-ref is a Key Vault secret NAME.
+uv run linkedin-publish meta register --binding <id> --account-id <logical> --platform facebook_page \
+    --native-account-id <page id> --app-id <app id> --subject-id <subject> \
+    --credential-ref <kv secret name> --credential-version <kv secret version> --dsn "$WRITER_DSN" [--dry-run]
+# Moves to a new credential version, clears the measurement, turns publishing off and
+# holds the binding (no grant is honoured). Then measure the NEW secret and re-enable.
+uv run linkedin-publish meta rotate --binding <id> --credential-ref <name> --credential-version <new> \
+    --dsn "$WRITER_DSN" [--dry-run]
+META_CREDENTIAL_VERSION=<new> uv run linkedin-publish meta inspect --binding <id> --record --dsn "$WRITER_DSN"
+uv run linkedin-publish meta reenable --binding <id> --dsn "$WRITER_DSN" [--dry-run]
+```
+
+No migration: the writer's existing UPDATE covers the rotation columns. A C3
+envelope's `rights_evidence` is kept on the ledger row under
+`origin["rights_evidence"]` (outside every digest). A media issuer calls
+`social_publish.require_rights(record, now=..., platform=...)` before signing: it
+refuses expired rights, an uncovered platform and a record with no retained
+evidence.
+
 ### Renewal (token rotation)
 
 A member token lives about 60 days. A re-minted token keeps its binding, its
