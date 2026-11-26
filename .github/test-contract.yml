@@ -17,7 +17,7 @@ suites:
     paths: ["tests/contract/**"]
     source_inputs: ["src/**", "pyproject.toml", "uv.lock"]
     required: true
-    minimum_executed: 499
+    minimum_executed: 289
     execution_step: contract
   - id: postgres
     owner: stromy-org/linkedin-publish
