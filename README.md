@@ -120,6 +120,22 @@ adapter under an existing id is refused: that is a new binding with fresh
 approvals, not an edit. For the CMA app, which has no OIDC product, pass
 `--no-identity`; its identity then stays unproven, which keeps it unactivatable.
 
+### The canary: import, approve, commission
+
+```bash
+# 4. Store the post as an UNAPPROVED pending publication. The CLI twin of the
+#    hosted `import_manifest` tool: same digest-derived publication id, same key.
+#    Re-importing identical bytes is a no-op; a changed payload is refused.
+uv run linkedin-publish manifest import canary.json --binding <id> --dsn "$WRITER_DSN"
+
+# 5. Approve the exact stored bytes (shows them, asks; there is no auto-yes),
+#    then write the one-shot grant for that single send.
+uv run linkedin-publish approval record --publication <pub id> --digest <digest> \
+  --binding <id> --actor <you> --dsn "$WRITER_DSN"
+uv run linkedin-publish account commission --publication <pub id> --digest <digest> \
+  --binding <id> --capability text --actor <you> --dsn "$WRITER_DSN"
+```
+
 ### Renewal (token rotation)
 
 A member token lives about 60 days. A re-minted token keeps its binding, its
