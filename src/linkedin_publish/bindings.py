@@ -22,6 +22,12 @@ What registration will not do is as important:
   on the version being replaced. Only `reenable` turns publishing back on, and only
   for a binding that was enabled before the rotation and has since been re-measured
   healthy for the new version (`reenable_problems`).
+* **First enablement is from a receipt.** `enable_capability` marks ONE
+  capability `enabled`, naming the canary publication that proved it, and turns
+  publishing on. It refuses unless that publication is a `published` receipt on
+  this binding for exactly that capability, and the current credential is
+  measured healthy (`enable_problems`). A text canary enables text and nothing
+  else (plan C1 steps 7 and 8).
 """
 
 from __future__ import annotations
@@ -31,8 +37,8 @@ from typing import Protocol
 
 from .auth import TokenObservation
 from .health import InMemoryObservationCache, ObservationCache
-from .models import AccountBinding
-from .store import StoreConflict
+from .models import AccountBinding, Capability, CapabilityStatus
+from .store import PublicationRecord, StoreConflict
 
 __all__ = [
     "IDENTITY_FIELDS",
@@ -40,6 +46,8 @@ __all__ = [
     "InMemoryBindingStore",
     "as_registration",
     "conflict_message",
+    "enable_problems",
+    "enabled",
     "reenable_problems",
     "registration_conflicts",
     "require_observation_version",
@@ -161,6 +169,101 @@ def reenable_problems(
     return problems
 
 
+def _health_problems(
+    binding: AccountBinding, observation: TokenObservation | None, *, now: datetime
+) -> list[str]:
+    """Why the current credential is not measured healthy. Empty means it is."""
+    problems: list[str] = []
+    if binding.token_observed_at is None or binding.token_expires_at is None:
+        problems.append("no measurement is stored for the current credential: run `account inspect --record`")
+    if binding.token_expires_at is not None and binding.token_expires_at <= now:
+        problems.append("the measured expiry has passed")
+    if not set(binding.declared_scopes).issubset(binding.observed_scopes):
+        problems.append("the observed scopes do not cover the declared scopes")
+    if observation is None:
+        problems.append("no health observation is cached for the current credential version")
+    else:
+        if observation.credential_version != binding.credential_version:
+            problems.append("the cached observation is for another credential version")
+        if not observation.healthy:
+            problems.append(f"the last observation is not healthy ({observation.reason or 'unverified'})")
+    return problems
+
+
+def enable_problems(
+    binding: AccountBinding,
+    evidence: PublicationRecord | None,
+    *,
+    capability: Capability,
+    observation: TokenObservation | None,
+    now: datetime,
+) -> list[str]:
+    """Why `capability` may not be enabled on `binding` from `evidence`. Empty means it may.
+
+    The receipt must be this binding's, `published` with a post URN, sent through
+    this binding's adapter, and of exactly this capability's shape. The capability
+    must still be `unknown` (an `unavailable` one is a recorded refusal, not a
+    gap), the binding must not be held after a rotation (that is `account
+    reenable`), and the current credential must be measured healthy.
+    """
+    problems: list[str] = []
+    if evidence is None:
+        problems.append("the evidence publication is not in the ledger")
+    else:
+        if evidence.binding_id != binding.binding_id:
+            problems.append(f"the evidence publication belongs to binding {evidence.binding_id}, not this one")
+        if evidence.state != "published" or not evidence.post_urn:
+            problems.append(
+                f"the evidence publication has no published receipt (state {evidence.state}); "
+                "an unknown send is reconciled first, never enabled from"
+            )
+        if evidence.adapter is not None and evidence.adapter != binding.adapter:
+            problems.append(f"the evidence was sent through {evidence.adapter}, not this binding's {binding.adapter}")
+        if evidence.draft.required_capability != capability:
+            problems.append(
+                f"the evidence is a {evidence.draft.required_capability!r} publication; "
+                f"it enables {evidence.draft.required_capability!r} only, not {capability!r}"
+            )
+    state = binding.capability_state(capability)
+    if state == "enabled":
+        problems.append(f"capability {capability!r} is already enabled")
+    elif state == "unavailable":
+        problems.append(f"capability {capability!r} is recorded unavailable; that is a refusal, not a gap")
+    if binding.reenable_after_measure:
+        problems.append("the binding is held after a credential rotation: re-measure, then `account reenable`")
+    problems.extend(_health_problems(binding, observation, now=now))
+    return problems
+
+
+def enabled(
+    binding: AccountBinding,
+    *,
+    capability: Capability,
+    evidence_publication_id: str,
+    observed_at: datetime,
+) -> AccountBinding:
+    """The binding with `capability` enabled from that receipt, and publishing on.
+
+    Pure, so both stores write exactly the same row. Other capabilities are kept
+    as they are. Raises `StoreConflict` if the capability is no longer `unknown`.
+    """
+    if binding.capability_state(capability) != "unknown":
+        raise StoreConflict(
+            f"binding {binding.binding_id!r} capability {capability!r} is "
+            f"{binding.capability_state(capability)}; re-run the check"
+        )
+    if binding.reenable_after_measure:
+        raise StoreConflict(f"binding {binding.binding_id!r} is held after a rotation; re-run the check")
+    status = CapabilityStatus(
+        capability=capability,
+        state="enabled",
+        observed_at=observed_at,
+        evidence_publication_id=evidence_publication_id,
+    )
+    kept = tuple(item for item in binding.capabilities if item.capability != capability)
+    return binding.model_copy(update={"capabilities": (*kept, status), "publish_enabled": True})
+
+
 class BindingStore(Protocol):
     """Persistence for account bindings. Implementations must refuse conflicts."""
 
@@ -193,6 +296,18 @@ class BindingStore(Protocol):
 
     async def reenable(self, binding_id: str, *, expected_version: str) -> AccountBinding:
         """Set `publish_enabled` back on after a rotation hold. Callers check `reenable_problems` first."""
+        ...
+
+    async def enable_capability(
+        self,
+        binding_id: str,
+        *,
+        capability: Capability,
+        evidence_publication_id: str,
+        observed_at: datetime,
+        expected_version: str,
+    ) -> AccountBinding:
+        """First enablement from a canary receipt. Callers check `enable_problems` first. See `enabled`."""
         ...
 
 
@@ -265,6 +380,29 @@ class InMemoryBindingStore:
         if existing.credential_version != expected_version or not existing.reenable_after_measure:
             raise StoreConflict(f"binding {binding_id!r} changed since it was checked; re-run the check")
         updated = existing.model_copy(update={"publish_enabled": True, "reenable_after_measure": False})
+        self._rows[binding_id] = updated
+        return updated
+
+    async def enable_capability(
+        self,
+        binding_id: str,
+        *,
+        capability: Capability,
+        evidence_publication_id: str,
+        observed_at: datetime,
+        expected_version: str,
+    ) -> AccountBinding:
+        existing = self._rows.get(binding_id)
+        if existing is None:
+            raise StoreConflict(f"binding {binding_id!r} is not registered")
+        if existing.credential_version != expected_version:
+            raise StoreConflict(f"binding {binding_id!r} changed since it was checked; re-run the check")
+        updated = enabled(
+            existing,
+            capability=capability,
+            evidence_publication_id=evidence_publication_id,
+            observed_at=observed_at,
+        )
         self._rows[binding_id] = updated
         return updated
 
