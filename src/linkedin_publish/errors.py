@@ -19,6 +19,7 @@ from typing import Final, Literal
 __all__ = [
     "AuthorForbidden",
     "CapabilityUnavailable",
+    "CmaOrganizationDisabled",
     "CredentialExpired",
     "CredentialMissing",
     "FailureCode",
@@ -168,6 +169,32 @@ class CapabilityUnavailable(LinkedInPublishError):
     def as_dict(self) -> dict[str, object]:
         detail = super().as_dict()
         detail["capability"] = self.capability
+        return detail
+
+
+class CmaOrganizationDisabled(CapabilityUnavailable):
+    """A CMA organization capability was asked of a build that has it switched off.
+
+    Organization publishing (any post authored as `urn:li:organization:*`,
+    documents included) and organization share statistics ship **disabled by
+    default** behind one explicit switch, named in `switch` and in the message.
+    This is a build-level refusal, raised before any binding state is consulted
+    and before any network call. Turning the switch on is necessary, never
+    sufficient: the binding must still carry commissioned evidence for the
+    capability and list the organization in `allowed_organization_urns`.
+
+    It keeps the `capability_unavailable` code, so every caller that already
+    branches on that code (the service tick counts it as `skipped_capability`)
+    handles it without change.
+    """
+
+    def __init__(self, message: str, *, capability: str, switch: str) -> None:
+        super().__init__(message, capability=capability)
+        self.switch = switch
+
+    def as_dict(self) -> dict[str, object]:
+        detail = super().as_dict()
+        detail["switch"] = self.switch
         return detail
 
 

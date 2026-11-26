@@ -7,6 +7,9 @@ than degrading to a text post.
 
 Its media URNs are `urn:li:digitalmediaAsset:*` and are not interchangeable with
 the REST surface's `urn:li:image:*` / `urn:li:document:*`.
+
+An organization author is a CMA capability here too, and refuses unless the
+adapter is built with `cma_organization_enabled=True` (see `cma.py`).
 """
 
 from __future__ import annotations
@@ -25,6 +28,7 @@ from .._http import (
 )
 from .._json import as_object
 from ..auth import Credentials
+from ..cma import require_for_author
 from ..errors import (
     CapabilityUnavailable,
     ProviderRejected,
@@ -47,9 +51,16 @@ class ShareUgcAdapter:
 
     name: Adapter = "share_ugc"
 
-    def __init__(self, http: httpx.AsyncClient, *, api_base: str = API_BASE) -> None:
+    def __init__(
+        self,
+        http: httpx.AsyncClient,
+        *,
+        api_base: str = API_BASE,
+        cma_organization_enabled: bool = False,
+    ) -> None:
         self._http = http
         self._api_base = api_base
+        self._cma_organization_enabled = cma_organization_enabled
 
     async def upload_image(
         self,
@@ -60,6 +71,9 @@ class ShareUgcAdapter:
         asset: ResolvedAsset,
     ) -> UploadedMedia:
         """Register an upload slot, PUT the bytes, return the asset URN."""
+        require_for_author(
+            self._cma_organization_enabled, author_urn, capability="image", what="ugc registerUpload"
+        )
         body = {
             "registerUploadRequest": {
                 "owner": author_urn,
@@ -126,6 +140,12 @@ class ShareUgcAdapter:
         draft: PostDraft,
         media_urn: str | None,
     ) -> PublishOutcome:
+        require_for_author(
+            self._cma_organization_enabled,
+            draft.author_urn,
+            capability=draft.required_capability,
+            what="ugc create",
+        )
         share_content: dict[str, object] = {
             "shareCommentary": {"text": draft.commentary},
             "shareMediaCategory": "NONE",

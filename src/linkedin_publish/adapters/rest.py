@@ -9,6 +9,11 @@ Its media URNs are `urn:li:image:*` and `urn:li:document:*`. A GET on a REST
 image is not available to a write-only `w_member_social` token, so this adapter
 never builds a polling loop around upload status — an upload either returns its
 URN or the capability stays unavailable.
+
+Organization authorship — an organization post, or an upload owned by an
+organization — is a CMA capability and refuses unless the adapter is built with
+`cma_organization_enabled=True` (see `cma.py`). Person-authored calls never
+consult that switch.
 """
 
 from __future__ import annotations
@@ -27,6 +32,7 @@ from .._http import (
 )
 from .._json import as_object
 from ..auth import Credentials
+from ..cma import require_for_author
 from ..errors import ProviderRejected, PublishOutcomeUnknown, TransientReadFailure
 from ..media import AssetReader, ResolvedAsset, check_upload_destination, upload_bytes
 from ..models import (
@@ -62,10 +68,12 @@ class RestPostsAdapter:
         *,
         api_base: str = API_BASE,
         linkedin_version: str = LINKEDIN_VERSION,
+        cma_organization_enabled: bool = False,
     ) -> None:
         self._http = http
         self._api_base = api_base
         self._version = linkedin_version
+        self._cma_organization_enabled = cma_organization_enabled
 
     async def upload_image(
         self,
@@ -83,6 +91,7 @@ class RestPostsAdapter:
             asset,
             path=REST_IMAGES_INITIALIZE_PATH,
             urn_key="image",
+            capability="image",
             what="rest image upload",
         )
 
@@ -102,6 +111,7 @@ class RestPostsAdapter:
             asset,
             path=REST_DOCUMENTS_INITIALIZE_PATH,
             urn_key="document",
+            capability="document",
             what="rest document upload",
         )
 
@@ -115,8 +125,10 @@ class RestPostsAdapter:
         *,
         path: str,
         urn_key: str,
+        capability: str,
         what: str,
     ) -> UploadedMedia:
+        require_for_author(self._cma_organization_enabled, author_urn, capability=capability, what=what)
         try:
             response = await self._http.post(
                 f"{self._api_base}{path}",
@@ -151,6 +163,12 @@ class RestPostsAdapter:
         draft: PostDraft,
         media_urn: str | None,
     ) -> PublishOutcome:
+        require_for_author(
+            self._cma_organization_enabled,
+            draft.author_urn,
+            capability=draft.required_capability,
+            what="rest create",
+        )
         body: dict[str, object] = {
             "author": draft.author_urn,
             "commentary": draft.commentary,

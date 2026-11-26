@@ -218,6 +218,15 @@ async def test_another_bindings_publication_cannot_be_deleted(credentials) -> No
 
 
 # ---------------------------------------------------------------- analytics ---
+#
+# Share statistics are a CMA organization capability and ship disabled (v0.7.0):
+# every test below exercises the ENABLED path, so it builds its client with the
+# switch on. The disabled default is pinned in tests/contract/test_cma_switch.py.
+
+
+def cma_client(handler, **kwargs: object):  # noqa: ANN001, ANN201
+    return make_client(handler, cma_organization_enabled=True, **kwargs)
+
 
 
 def test_the_query_encodes_a_millisecond_interval() -> None:
@@ -260,7 +269,7 @@ def test_the_query_refuses_a_non_organization_urn() -> None:
 
 async def test_analytics_needs_its_own_capability(credentials) -> None:  # noqa: ANN001
     """A successful publish says nothing about ADMINISTRATOR role."""
-    client, log = make_client(lambda _r: httpx.Response(200, json={"elements": []}))
+    client, log = cma_client(lambda _r: httpx.Response(200, json={"elements": []}))
     with pytest.raises(CapabilityUnavailable) as caught:
         await client.share_statistics(
             binding(adapter="rest_posts", allowed_orgs=(ORG,)),
@@ -277,7 +286,7 @@ async def test_analytics_needs_its_own_capability(credentials) -> None:  # noqa:
 
 async def test_analytics_refuses_an_organization_outside_the_binding(credentials) -> None:  # noqa: ANN001
     """A token that happens to reach another Page is not authorization to report on it."""
-    client, log = make_client(lambda _r: httpx.Response(200, json={"elements": []}))
+    client, log = cma_client(lambda _r: httpx.Response(200, json={"elements": []}))
     with pytest.raises(AuthorForbidden):
         await client.share_statistics(
             binding(adapter="rest_posts", capabilities=("text", "share_statistics")),
@@ -292,7 +301,7 @@ async def test_analytics_refuses_an_organization_outside_the_binding(credentials
 
 
 async def test_analytics_is_unavailable_on_the_share_product(credentials) -> None:  # noqa: ANN001
-    client, log = make_client(lambda _r: httpx.Response(200, json={"elements": []}))
+    client, log = cma_client(lambda _r: httpx.Response(200, json={"elements": []}))
     with pytest.raises(CapabilityUnavailable, match="versioned-REST"):
         await client.share_statistics(
             binding(capabilities=("text", "share_statistics"), allowed_orgs=(ORG,)),
@@ -328,7 +337,7 @@ async def test_a_measured_zero_and_a_negative_count_both_survive(credentials) ->
             },
         )
 
-    client, _log = make_client(handler)
+    client, _log = cma_client(handler)
     stats = await client.share_statistics(
         binding(adapter="rest_posts", capabilities=("text", "share_statistics"), allowed_orgs=(ORG,)),
         credentials,
@@ -359,7 +368,7 @@ async def test_an_absent_metric_is_none_with_a_reason_not_zero(credentials) -> N
             },
         )
 
-    client, _log = make_client(handler)
+    client, _log = cma_client(handler)
     stats = await client.share_statistics(
         binding(adapter="rest_posts", capabilities=("text", "share_statistics"), allowed_orgs=(ORG,)),
         credentials,
@@ -376,7 +385,7 @@ async def test_an_absent_metric_is_none_with_a_reason_not_zero(credentials) -> N
 
 
 async def test_an_empty_window_carries_its_provenance_and_a_reason(credentials) -> None:  # noqa: ANN001
-    client, _log = make_client(lambda _r: httpx.Response(200, json={"elements": []}))
+    client, _log = cma_client(lambda _r: httpx.Response(200, json={"elements": []}))
     stats = await client.share_statistics(
         binding(adapter="rest_posts", capabilities=("text", "share_statistics"), allowed_orgs=(ORG,)),
         credentials,
@@ -394,7 +403,7 @@ async def test_an_empty_window_carries_its_provenance_and_a_reason(credentials) 
 
 
 async def test_a_missing_role_surfaces_as_a_permission_failure(credentials) -> None:  # noqa: ANN001
-    client, _log = make_client(lambda _r: httpx.Response(403, json={"serviceErrorCode": "ACCESS_DENIED"}))
+    client, _log = cma_client(lambda _r: httpx.Response(403, json={"serviceErrorCode": "ACCESS_DENIED"}))
     with pytest.raises(AuthorForbidden):
         await client.share_statistics(
             binding(adapter="rest_posts", capabilities=("text", "share_statistics"), allowed_orgs=(ORG,)),
@@ -408,7 +417,7 @@ async def test_a_missing_role_surfaces_as_a_permission_failure(credentials) -> N
 
 
 async def test_a_malformed_analytics_body_is_a_reason_not_a_crash(credentials) -> None:  # noqa: ANN001
-    client, _log = make_client(lambda _r: httpx.Response(200, json={"unexpected": True}))
+    client, _log = cma_client(lambda _r: httpx.Response(200, json={"unexpected": True}))
     stats = await client.share_statistics(
         binding(adapter="rest_posts", capabilities=("text", "share_statistics"), allowed_orgs=(ORG,)),
         credentials,
@@ -423,7 +432,7 @@ async def test_a_malformed_analytics_body_is_a_reason_not_a_crash(credentials) -
 
 
 async def test_a_rejected_analytics_read_never_leaks_the_body(credentials) -> None:  # noqa: ANN001
-    client, _log = make_client(
+    client, _log = cma_client(
         lambda _r: httpx.Response(400, json={"message": "internal org id 7788 not permitted"})
     )
     with pytest.raises(ProviderRejected) as caught:
