@@ -28,6 +28,7 @@ Nothing here touches the network or a credential.
 
 from __future__ import annotations
 
+import re
 import secrets
 from collections.abc import Sequence
 from datetime import datetime, timedelta
@@ -35,7 +36,7 @@ from datetime import datetime, timedelta
 from .adapters.meta import DECLARED
 from .errors import StoreConflict
 from .ledger import SocialApproval, SocialEvent, SocialGrant, capability_key
-from .model import OperationCapability, SocialBinding, SocialRecord
+from .model import META_PLATFORMS, OperationCapability, SocialBinding, SocialRecord
 
 __all__ = [
     "ENABLE_RECEIPT_STATES",
@@ -44,6 +45,9 @@ __all__ = [
     "enable_problems",
     "enabled_binding",
     "new_grant",
+    "reenable_problems",
+    "registration_problems",
+    "rotated_binding",
     "token_problems",
 ]
 
@@ -63,6 +67,10 @@ ENABLE_RECEIPT_STATES: dict[tuple[str, str], frozenset[str]] = {
 #: Events that only a dispatch of this ledger writes once the provider accepted
 #: (or a read-only reconcile found) the object.
 _RECEIPT_EVENTS = frozenset({"scheduled", "published", "reconciled_scheduled", "reconciled_published"})
+
+
+_NATIVE_ID = re.compile(r"^[0-9]{1,32}$")
+_META_ADAPTER = "meta_graph"
 
 
 def _declared(platform: str, operation: str, fmt: str) -> bool:
@@ -235,3 +243,115 @@ def enabled_binding(
         evidence_publication_id=evidence_publication_id,
     )
     return binding.model_copy(update={"capabilities": (*kept, status), "publish_enabled": True})
+
+
+def registration_problems(
+    *,
+    platform: str,
+    native_account_id: str,
+    adapter: str,
+    app_id: str,
+    credential_version: str,
+    existing: SocialBinding | None,
+    same_account: SocialBinding | None,
+) -> list[str]:
+    """Why a Meta binding may not be registered as asked. Empty means it may.
+
+    Pure pre-flight for `meta register`: registration writes configuration, not
+    permission, so these are shape and uniqueness checks only. `existing` is the
+    binding already holding the requested id; `same_account` is a binding that
+    already names this platform and native account.
+    """
+    problems: list[str] = []
+    if platform == "linkedin":
+        problems.append("a LinkedIn binding is registered with `account register`, not `meta register`")
+    elif platform not in META_PLATFORMS:
+        problems.append(f"platform {platform!r} is not a Meta platform ({', '.join(sorted(META_PLATFORMS))})")
+    if not _NATIVE_ID.match(native_account_id):
+        problems.append(
+            f"native account id {native_account_id!r} is not a numeric Page or Instagram user id (1-32 digits)"
+        )
+    if adapter != _META_ADAPTER:
+        problems.append(f"a Meta binding uses the {_META_ADAPTER} adapter, not {adapter!r}")
+    if not app_id.strip():
+        problems.append("the Meta app id is empty")
+    if not credential_version.strip():
+        problems.append("the credential version (the Key Vault secret version) is empty")
+    if existing is not None:
+        problems.append(f"binding {existing.binding_id!r} is already registered; registration never overwrites")
+    if same_account is not None and (existing is None or same_account.binding_id != existing.binding_id):
+        problems.append(
+            f"binding {same_account.binding_id!r} already names {platform} account {native_account_id}; "
+            "one account has one binding"
+        )
+    return problems
+
+
+def rotated_binding(
+    binding: SocialBinding,
+    *,
+    expected_version: str,
+    credential_ref: str,
+    credential_version: str,
+    at: datetime,
+) -> SocialBinding:
+    """The Meta binding after a rotation, or `StoreConflict` when it may not rotate.
+
+    LinkedIn's `rotated`, on the neutral model. The stored measurement is
+    cleared (a reading of the old secret says nothing of the new one), publishing
+    turns off and the hold is set when the binding was enabled — or already held
+    by an earlier rotation. Capabilities are kept: a rotation moves the secret,
+    not what was proven about the account. Ledger rows are never touched.
+    """
+    if binding.platform == "linkedin":
+        raise StoreConflict("a LinkedIn binding rotates with `account rotate`")
+    if binding.credential_version != expected_version:
+        raise StoreConflict(
+            f"binding {binding.binding_id!r} names credential version {binding.credential_version!r}, "
+            f"not {expected_version!r}; re-read it before rotating"
+        )
+    if credential_version == binding.credential_version:
+        raise StoreConflict(
+            f"binding {binding.binding_id!r} already names credential version {credential_version!r}; "
+            "a rotation needs a new version"
+        )
+    return binding.model_copy(
+        update={
+            "credential_ref": credential_ref,
+            "credential_version": credential_version,
+            "token_expires_at": None,
+            "token_observed_at": None,
+            "token_never_expires": False,
+            "publish_enabled": False,
+            "rotated_at": at,
+            "reenable_after_measure": binding.publish_enabled or binding.reenable_after_measure,
+        }
+    )
+
+
+def reenable_problems(binding: SocialBinding, *, now: datetime) -> list[str]:
+    """Why a rotated Meta binding may not be re-enabled now. Empty means it may.
+
+    Re-enabling restores what a rotation took away; it is not the canary's
+    enablement. It needs the hold, and a measurement of the CURRENT credential
+    version taken after the rotation that is not expired (`meta inspect --record`
+    writes it only for the binding's current version, and a rotation clears it).
+    """
+    problems: list[str] = []
+    if binding.platform == "linkedin":
+        return ["a LinkedIn binding re-enables with `account reenable`"]
+    if binding.publish_enabled:
+        problems.append("publishing is already enabled")
+    if not binding.reenable_after_measure:
+        problems.append(
+            "the binding was not enabled before its rotation; first enablement is the canary path "
+            "(commission, then enable from the receipt), not a re-enable"
+        )
+    problems.extend(token_problems(binding, now=now))
+    if (
+        binding.token_observed_at is not None
+        and binding.rotated_at is not None
+        and binding.token_observed_at < binding.rotated_at
+    ):
+        problems.append("the stored measurement predates the rotation: run `meta inspect --record`")
+    return problems

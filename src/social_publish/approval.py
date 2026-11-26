@@ -70,6 +70,7 @@ from .canonical import canonical_digest, canonical_json
 from .errors import ApprovalRefused
 from .ledger import ImportOutcome, SocialApproval, SocialStore
 from .model import MetaAccount, MetaParent, MetaPayload, SocialBinding, SocialKey, SocialRecord
+from .rights import normalize_rights_evidence
 from .states import SocialState
 
 __all__ = [
@@ -408,6 +409,19 @@ async def import_c3_approval(
     digest = canonical_digest(payload_json)
     sequence = int(attestation["sequence"])
     publication_id = f"pub_{digest[:24]}"
+    origin: dict[str, object] = {
+        "kind": "c3-approval",
+        "envelope_sha256": canonical_digest(envelope),
+        "key_id": attestation.get("key_id"),
+        "actor": attestation.get("actor"),
+        "sequence": sequence,
+        "source_state": source.state,
+        "route": envelope.get("route"),
+    }
+    # Kept beside the row, outside every digest: a media issuer re-checks it before signing (rights.py).
+    rights = normalize_rights_evidence(envelope.get("rights_evidence"))
+    if rights is not None:
+        origin["rights_evidence"] = rights
     social = SocialRecord(
         publication_id=publication_id,
         key=SocialKey(
@@ -431,15 +445,7 @@ async def import_c3_approval(
         adapter=binding.adapter if state != "pending" else None,
         failure_code=f"imported:{source.state}" if state == "unknown" and source.state else None,
         intent_id=operation_key,
-        origin={
-            "kind": "c3-approval",
-            "envelope_sha256": canonical_digest(envelope),
-            "key_id": attestation.get("key_id"),
-            "actor": attestation.get("actor"),
-            "sequence": sequence,
-            "source_state": source.state,
-            "route": envelope.get("route"),
-        },
+        origin=origin,
     )
     approval = SocialApproval(
         approval_id=f"c3_{canonical_digest(envelope)[:32]}",

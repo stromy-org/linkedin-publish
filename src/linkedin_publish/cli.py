@@ -38,8 +38,10 @@ credential and without a network call.
 `manifest import` stores a manifest as unapproved pending rows (the CLI twin of
 the hosted `import_manifest` tool); it approves nothing.
 
-`meta inspect --record`, `meta status`, `meta commission`, `meta publish-due` and
-`meta enable` are the Meta twins of the canary route (ORG-PLAN-652 C5a): token
+`meta register` (DISABLED, nothing commissioned), `meta rotate` and `meta reenable`
+(the credential hold, as `account rotate`/`reenable`), `meta inspect --record`,
+`meta status`, `meta commission`, `meta publish-due` and `meta enable` are the Meta
+twins of the canary route (ORG-PLAN-652 C5a): token
 evidence from `debug_token` (a measured expiry or explicit no-expiry), a grant
 for one Meta publication and one `unknown` (operation, format), the one send as
 the commissioning actor, and enablement from that send's own receipt.
@@ -1388,6 +1390,24 @@ def _show_meta_stored(record: Any) -> None:
     click.echo("--- end ---")
 
 
+def _refuse_secret_shaped_meta(credential_ref: str) -> None:
+    """Stop a pasted Meta token from being stored where a reference belongs."""
+    value = os.environ.get("META_ACCESS_TOKEN")
+    if value and value in credential_ref:
+        click.echo(
+            "ABORT: --credential-ref contains the value of META_ACCESS_TOKEN. Pass a reference, never the secret.",
+            err=True,
+        )
+        sys.exit(2)
+    if not _REFERENCE.match(credential_ref):
+        click.echo(
+            "ABORT: --credential-ref must be a short reference such as a Key Vault secret name "
+            "(letters, digits, . _ : / @ -, at most 127 characters).",
+            err=True,
+        )
+        sys.exit(2)
+
+
 def _refused(subject: str, problems: list[str]) -> None:
     click.echo(f"REFUSED  {subject}:", err=True)
     for problem in problems:
@@ -1803,6 +1823,244 @@ def meta_enable(
         click.echo(f"CONFLICT  {exc}", err=True)
         sys.exit(1)
     click.echo(f"enabled  {binding_id}  {operation} {fmt} (evidence {evidence.publication_id}); publishing ON")
+
+
+@meta.command("register")
+@click.option("--binding", "binding_id", default=None, help="Opaque binding id; generated when omitted.")
+@click.option("--account-id", required=True, help="Stable logical account id; survives token rotation.")
+@click.option("--platform", required=True, help="facebook_page or instagram_professional.")
+@click.option("--native-account-id", required=True, help="The numeric Facebook Page id or Instagram user id.")
+@click.option("--app-id", required=True, help="The Meta app's id. Not its secret.")
+@click.option(
+    "--subject-kind",
+    type=click.Choice(["entra_oid", "client_slug", "service"]),
+    default="service",
+    show_default=True,
+    help="Kind of the trusted subject allowed to use this binding.",
+)
+@click.option("--subject-id", required=True, help="The trusted subject (a service name, client slug or Entra oid).")
+@click.option("--adapter", default="meta_graph", show_default=True, help="The Meta adapter; only meta_graph exists.")
+@click.option(
+    "--credential-ref", required=True, help="Where the secret lives (a Key Vault secret name). Never the value."
+)
+@click.option("--credential-version", required=True, help="The Key Vault secret version the reference points at.")
+@click.option("--dsn", envvar="LINKEDIN_PUBLISH_DSN", default=None, help="Writer-role DSN. Omit with --dry-run.")
+@click.option("--dry-run", is_flag=True, help="Validate and preview only; write nothing.")
+def meta_register(
+    binding_id: str | None,
+    account_id: str,
+    platform: str,
+    native_account_id: str,
+    app_id: str,
+    subject_kind: str,
+    subject_id: str,
+    adapter: str,
+    credential_ref: str,
+    credential_version: str,
+    dsn: str | None,
+    dry_run: bool,
+) -> None:
+    """Register a Meta binding. It is created DISABLED, with every capability unknown.
+
+    Registration writes configuration, not permission: `publish_enabled` is false
+    and nothing is commissioned until a recorded canary proves it (`meta
+    inspect --record`, `commission`, `publish-due`, `enable`). No credential
+    value is accepted here — only a reference and its version. Refuses a
+    non-Meta platform, a non-numeric account id, a binding id already
+    registered and an account that already has a binding.
+    """
+    from social_publish import SocialBinding, registration_problems
+
+    _refuse_secret_shaped_meta(credential_ref)
+
+    async def _preflight() -> tuple[Any, Any]:
+        if not dsn:
+            return None, None
+        async with _social_binding_store(dsn) as store:
+            existing = await store.get(binding_id) if binding_id else None
+            same = await store.find_account(platform, native_account_id)
+        return existing, same
+
+    existing, same = asyncio.run(_preflight())
+    problems = registration_problems(
+        platform=platform,
+        native_account_id=native_account_id,
+        adapter=adapter,
+        app_id=app_id,
+        credential_version=credential_version,
+        existing=existing,
+        same_account=same,
+    )
+    if problems:
+        _refused(f"{binding_id or 'new binding'} is not registered", problems)
+    try:
+        binding = SocialBinding(
+            binding_id=binding_id or f"bind_{secrets.token_urlsafe(9)}",
+            account_id=account_id,
+            subject_kind=subject_kind,  # type: ignore[arg-type] - narrowed by click.Choice
+            subject_id=subject_id,
+            app_id=app_id,
+            platform=platform,  # type: ignore[arg-type] - checked by registration_problems
+            adapter=adapter,  # type: ignore[arg-type] - checked by registration_problems
+            native_account_id=native_account_id,
+            credential_ref=credential_ref,
+            credential_version=credential_version,
+        )
+    except ValueError as exc:
+        click.echo(f"INVALID  {exc}", err=True)
+        sys.exit(1)
+
+    click.echo("Meta binding — registered DISABLED; this enables no publishing.")
+    for name in (
+        "binding_id",
+        "account_id",
+        "platform",
+        "native_account_id",
+        "app_id",
+        "subject_kind",
+        "subject_id",
+        "adapter",
+        "credential_ref",
+        "credential_version",
+    ):
+        click.echo(f"  {name:<22}{getattr(binding, name)}")
+    click.echo(f"  {'publish_enabled':<22}False")
+    click.echo(f"  {'capabilities':<22}none (every operation and format unknown)")
+
+    if dry_run:
+        click.echo("dry run — nothing written")
+        return
+    if not dsn:
+        click.echo("ABORT: --dsn (or LINKEDIN_PUBLISH_DSN) is required unless --dry-run.", err=True)
+        sys.exit(2)
+
+    click.confirm("Register this binding?", abort=True)
+
+    async def _register() -> bool:
+        async with _social_binding_store(dsn) as store:
+            return await store.register(binding)
+
+    try:
+        created = asyncio.run(_register())
+    except StoreConflict as exc:
+        click.echo(f"CONFLICT  {exc}", err=True)
+        sys.exit(1)
+    click.echo(f"{'registered' if created else 'already registered (identical)'}  {binding.binding_id}")
+    click.echo(f"next: `meta inspect --binding {binding.binding_id} --record` with the secret in the environment")
+
+
+@meta.command("rotate")
+@click.option("--binding", "binding_id", required=True, help="The Meta binding whose credential is being renewed.")
+@click.option(
+    "--credential-ref", required=True, help="Where the NEW secret lives (a Key Vault secret name). Never the value."
+)
+@click.option("--credential-version", required=True, help="The new Key Vault secret version.")
+@click.option(
+    "--from-version",
+    "expected_version",
+    default=None,
+    help="The version being replaced. Defaults to the binding's current one; pass it to refuse a stale view.",
+)
+@click.option("--dsn", envvar="LINKEDIN_PUBLISH_DSN", required=True, help="Writer-role DSN.")
+@click.option("--dry-run", is_flag=True, help="Show the change and write nothing.")
+def meta_rotate(
+    binding_id: str,
+    credential_ref: str,
+    credential_version: str,
+    expected_version: str | None,
+    dsn: str,
+    dry_run: bool,
+) -> None:
+    """Move a Meta binding to a new credential version, and HOLD it until re-measured.
+
+    The same app, account and adapter: approvals, the ledger and the capabilities
+    already proven carry over. The stored token measurement is cleared and
+    publishing turns off with `reenable_after_measure` set, so no grant is
+    honoured and nothing is enabled on the new secret's behalf. Then, with the
+    new secret in the environment (META_CREDENTIAL_VERSION set to the new
+    version), `meta inspect --binding <id> --record`, and `meta reenable`.
+    """
+    _refuse_secret_shaped_meta(credential_ref)
+    current = asyncio.run(_load_meta_binding(dsn, binding_id))
+    replacing = expected_version or current.credential_version
+
+    click.echo("Credential rotation — the binding is HELD until the new secret is measured.")
+    click.echo(f"  binding                   {current.binding_id}   {current.platform}")
+    click.echo(f"  credential_ref            {current.credential_ref}  ->  {credential_ref}")
+    click.echo(f"  credential_version        {replacing}  ->  {credential_version}")
+    click.echo(f"  publish_enabled           {current.publish_enabled}  ->  False")
+    click.echo(
+        "  hold after rotation       "
+        f"{current.reenable_after_measure}  ->  "
+        f"{'True' if current.publish_enabled or current.reenable_after_measure else 'False (it was not enabled)'}"
+    )
+    click.echo("  token measurement         cleared")
+    if dry_run:
+        click.echo("dry run — nothing written")
+        return
+    click.confirm("Rotate this binding's credential?", abort=True)
+
+    async def _rotate() -> Any:
+        async with _social_binding_store(dsn) as store:
+            return await store.rotate(
+                binding_id,
+                expected_version=replacing,
+                credential_ref=credential_ref,
+                credential_version=credential_version,
+                at=datetime.now(timezone.utc),
+            )
+
+    try:
+        moved = asyncio.run(_rotate())
+    except StoreConflict as exc:
+        click.echo(f"CONFLICT  {exc}", err=True)
+        sys.exit(1)
+    click.echo(f"rotated  {moved.binding_id}  now {moved.credential_version}, publishing HELD")
+    click.echo(
+        f"next: with the new secret in the environment, `meta inspect --binding {moved.binding_id} --record`"
+        + (f", then `meta reenable --binding {moved.binding_id}`" if moved.reenable_after_measure else "")
+    )
+
+
+@meta.command("reenable")
+@click.option("--binding", "binding_id", required=True)
+@click.option("--dsn", envvar="LINKEDIN_PUBLISH_DSN", required=True, help="Writer-role DSN.")
+@click.option("--dry-run", is_flag=True, help="Show the change and write nothing.")
+def meta_reenable(binding_id: str, dsn: str, dry_run: bool) -> None:
+    """Restore publishing on a rotated Meta binding, after a fresh healthy measurement.
+
+    Refuses unless the binding was enabled before its rotation (it is held), and
+    the current credential version was measured by `meta inspect --record` after
+    the rotation with an expiry still in the future (or explicit no-expiry
+    evidence). This is not the canary's first enablement and cannot become one.
+    """
+    from social_publish import reenable_problems as meta_reenable_problems
+
+    binding = asyncio.run(_load_meta_binding(dsn, binding_id))
+    now = datetime.now(timezone.utc)
+    problems = meta_reenable_problems(binding, now=now)
+    if problems:
+        _refused(f"{binding_id} stays held", problems)
+
+    click.echo(f"Re-enable publishing on {binding_id} (credential {binding.credential_version}).")
+    click.echo(f"  publish_enabled           {binding.publish_enabled}  ->  True")
+    click.echo("  hold after rotation       True  ->  False")
+    click.echo("Pending approved publications that are due will be sent by the next live tick.")
+    if dry_run:
+        click.echo("dry run — nothing written")
+        return
+    click.confirm("Re-enable?", abort=True)
+
+    async def _enable() -> Any:
+        async with _social_binding_store(dsn) as store:
+            return await store.reenable(binding_id, expected_version=binding.credential_version, now=now)
+
+    try:
+        asyncio.run(_enable())
+    except StoreConflict as exc:
+        click.echo(f"CONFLICT  {exc}", err=True)
+        sys.exit(1)
+    click.echo(f"re-enabled  {binding_id}")
 
 
 if __name__ == "__main__":

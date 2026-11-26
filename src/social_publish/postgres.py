@@ -31,7 +31,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
 from .bindings import token_fields
-from .commissioning import enabled_binding
+from .commissioning import enabled_binding, reenable_problems, rotated_binding
 from .errors import ApprovalRefused, StoreConflict
 from .ledger import ImportOutcome, SocialApproval, SocialEvent, SocialGrant, check_updates, decide_import
 from .model import OperationCapability, SocialBinding, SocialRecord
@@ -387,6 +387,7 @@ def _as_binding(row: Any) -> SocialBinding:
             "token_observed_at": row["token_observed_at"],
             "token_never_expires": bool(_optional(row, "token_never_expires", False)),
             "reenable_after_measure": bool(_optional(row, "reenable_after_measure", False)),
+            "rotated_at": _optional(row, "rotated_at"),
             "capabilities": [OperationCapability.model_validate(item) for item in capabilities if "operation" in item],
             "publish_enabled": row["publish_enabled"],
         }
@@ -439,6 +440,90 @@ class PostgresSocialBindingStore:
             "SELECT * FROM linkedin_publish.account_bindings WHERE binding_id = $1", binding_id
         )
         return _as_binding(row) if row else None
+
+    async def find_account(self, platform: str, native_account_id: str) -> SocialBinding | None:
+        row = await self._pool.fetchrow(
+            "SELECT * FROM linkedin_publish.account_bindings WHERE platform = $1 AND native_account_id = $2 "
+            "ORDER BY binding_id LIMIT 1",
+            platform,
+            native_account_id,
+        )
+        return _as_binding(row) if row else None
+
+    async def rotate(
+        self,
+        binding_id: str,
+        *,
+        expected_version: str,
+        credential_ref: str,
+        credential_version: str,
+        at: datetime,
+    ) -> SocialBinding:
+        """Move a Meta binding to a new credential version, disabled and held (writer role).
+
+        The same compare-and-set on the version being replaced as LinkedIn's
+        rotation, so two rotations racing from one version cannot both land.
+        Uses 0005's columns (`rotated_at`, `reenable_after_measure`) and 0007's
+        `token_never_expires`; the writer's table-level UPDATE (0002) covers
+        them, so no migration and no new grant.
+        """
+        await require_meta_commissioning_schema(self._pool)
+        existing = await self.get(binding_id)
+        if existing is None:
+            raise StoreConflict(f"binding {binding_id!r} is not registered")
+        target = rotated_binding(
+            existing,
+            expected_version=expected_version,
+            credential_ref=credential_ref,
+            credential_version=credential_version,
+            at=at,
+        )
+        row = await self._pool.fetchrow(
+            """
+            UPDATE linkedin_publish.account_bindings
+               SET credential_ref = $3, credential_version = $4,
+                   observed_scopes = '{}', token_expires_at = NULL, token_observed_at = NULL,
+                   token_never_expires = false, publish_enabled = false, rotated_at = $5,
+                   rotated_from_version = $2, reenable_after_measure = $6, updated_at = now()
+             WHERE binding_id = $1 AND credential_version = $2 AND platform <> 'linkedin'
+            RETURNING *
+            """,
+            binding_id,
+            expected_version,
+            target.credential_ref,
+            target.credential_version,
+            at,
+            target.reenable_after_measure,
+        )
+        if row is None:
+            raise StoreConflict(f"binding {binding_id!r} changed during rotation; re-read it and retry")
+        return _as_binding(row)
+
+    async def reenable(self, binding_id: str, *, expected_version: str, now: datetime) -> SocialBinding:
+        """Clear the hold and turn publishing on, only after a fresh healthy measurement (writer role).
+
+        The hold, the version and the measurement are re-checked under the row
+        lock (`reenable_problems`), so the decision and the write are one.
+        """
+        await require_meta_commissioning_schema(self._pool)
+        async with self._pool.acquire() as connection, connection.transaction():
+            row = await connection.fetchrow(
+                "SELECT * FROM linkedin_publish.account_bindings WHERE binding_id = $1 FOR UPDATE", binding_id
+            )
+            if row is None:
+                raise StoreConflict(f"binding {binding_id!r} is not registered")
+            existing = _as_binding(row)
+            if existing.credential_version != expected_version:
+                raise StoreConflict(f"binding {binding_id!r} changed since it was checked; re-run the check")
+            problems = reenable_problems(existing, now=now)
+            if problems:
+                raise StoreConflict("; ".join(problems))
+            written = await connection.fetchrow(
+                "UPDATE linkedin_publish.account_bindings SET publish_enabled = true, "
+                "reenable_after_measure = false, updated_at = now() WHERE binding_id = $1 RETURNING *",
+                binding_id,
+            )
+        return _as_binding(written)
 
     async def disable(self, binding_id: str) -> SocialBinding:
         """The rollback switch: publishing off. Read-back and reconciliation continue."""
