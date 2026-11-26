@@ -1,0 +1,456 @@
+{
+  "canonical_encoding": "JSON, sorted keys, separators (',', ':'), ensure_ascii false, UTF-8; digest = SHA-256 lowercase hex (linkedin_publish.manifest.canonical_json)",
+  "dst_cases": [
+    {
+      "refusal": "slot_nonexistent",
+      "slot_local": "2026-03-29T02:30:00+01:00",
+      "timezone": "Europe/Brussels"
+    },
+    {
+      "refusal": "slot_nonexistent",
+      "slot_local": "2026-03-29T02:30:00",
+      "timezone": "Europe/Brussels"
+    },
+    {
+      "refusal": "slot_offset_missing",
+      "slot_local": "2026-10-25T02:30:00",
+      "timezone": "Europe/Brussels"
+    },
+    {
+      "slot_local": "2026-10-25T02:30:00+02:00",
+      "timezone": "Europe/Brussels",
+      "utc": "2026-10-25T00:30:00Z"
+    },
+    {
+      "slot_local": "2026-10-25T02:30:00+01:00",
+      "timezone": "Europe/Brussels",
+      "utc": "2026-10-25T01:30:00Z"
+    },
+    {
+      "refusal": "slot_offset_mismatch",
+      "slot_local": "2026-10-25T02:30:00+03:00",
+      "timezone": "Europe/Brussels"
+    },
+    {
+      "refusal": "slot_offset_missing",
+      "slot_local": "2026-12-08T12:00:00",
+      "timezone": "Europe/Brussels"
+    },
+    {
+      "slot_local": "2026-12-08T12:00:00+01:00",
+      "timezone": "Europe/Brussels",
+      "utc": "2026-12-08T11:00:00Z"
+    }
+  ],
+  "envelope_version": "social-ops-approval/1",
+  "instance": {
+    "accounts": [
+      {
+        "account_id": "fb-main",
+        "platform": "facebook_page",
+        "platform_id": "100000000000001"
+      },
+      {
+        "account_id": "ig-main",
+        "platform": "instagram_professional",
+        "platform_id": "170000000000001"
+      }
+    ],
+    "context": "fixture-brand",
+    "counsel": null,
+    "instance_id": "fixture-brand",
+    "material_questions": [],
+    "timezone": "Europe/Brussels"
+  },
+  "mutations": [
+    {
+      "envelope_sha256": "51155dd24993f1049ab8241ea77d46c5aecc21aa057802dc528d67582c822dee",
+      "name": "caption_byte",
+      "path": [
+        "caption_sha256"
+      ],
+      "value": "207bc2f14e9a6976d84abc5ac55459e90f5d2be170f0eb8f7207ce053a055b18",
+      "vector": "fb_feed_image"
+    },
+    {
+      "envelope_sha256": "7273224c962bda1ed9ec13220fc70766a18cdff60bb34ebb00ab9e56bc31ab82",
+      "name": "media_order",
+      "path": [
+        "media"
+      ],
+      "value": [
+        "sha256:b7f53714d7b21dc68aecd9cfefe759aa3eb8b94618630c8e04f6dfad44331bea",
+        "sha256:c7a8e7458fb651629fd604c60dd05817a6ed3cb8197388940bd96899efca7ec9"
+      ],
+      "vector": "ig_carousel_dst_overlap"
+    },
+    {
+      "envelope_sha256": "8c17f860c674df38ad2d3788fd37bdb3133163579b609381a5cf22b7c3f7dfc4",
+      "name": "media_hash",
+      "path": [
+        "media"
+      ],
+      "value": [
+        "sha256:210277cb6266afe7c6cc4227ff3e9efc818f55234a7d7fbf033ab602440f2437"
+      ],
+      "vector": "fb_feed_image"
+    },
+    {
+      "envelope_sha256": "2e5db8e9a73794e2f163b983adc48be110f79de895d2a20d2ecbb2e6273be27a",
+      "name": "target_comment",
+      "path": [
+        "target",
+        "comment_id"
+      ],
+      "value": "100000000000001_555",
+      "vector": "fb_feed_image"
+    },
+    {
+      "envelope_sha256": "bf6637254b6c8f5ea305821ed06b10f217d0b2955ddf014c34e82d427232ed02",
+      "name": "account",
+      "path": [
+        "target",
+        "account_platform_id"
+      ],
+      "value": "100000000000002",
+      "vector": "fb_feed_image"
+    },
+    {
+      "envelope_sha256": "8b5a27494720817e626f716a704707e667facacb24f18d6dab99bf9470d0af10",
+      "name": "slot",
+      "path": [
+        "slot_utc"
+      ],
+      "value": "2026-12-08T12:00:00Z",
+      "vector": "fb_feed_image"
+    },
+    {
+      "envelope_sha256": "cc9ff38799c0f854ba7f48b53a754c741da3084d36de4fbd7d0000f4b2df6ee4",
+      "name": "visibility",
+      "path": [
+        "public_fields",
+        "visibility"
+      ],
+      "value": "restricted",
+      "vector": "fb_feed_image"
+    },
+    {
+      "envelope_sha256": "4def941f0c79eeb742405f29c7d88815665f1788a3ff73fa587826610dbb5aa7",
+      "name": "policy_version",
+      "path": [
+        "policy_decision",
+        "packs"
+      ],
+      "value": [
+        {
+          "pack_id": "fixture-pack",
+          "sha256": "102368591aa5111ac2833bfd9d54392eeff74a20ce486fe3f31c5eafe425e816",
+          "version": "2026-11-27.1"
+        }
+      ],
+      "vector": "fb_feed_image"
+    },
+    {
+      "envelope_sha256": "2109c19492a7b9427db787cf1def6a636e52c711e541157fa85407fbc5cee67d",
+      "name": "expiry",
+      "path": [
+        "expires_utc"
+      ],
+      "value": "2026-12-08T10:00:00Z",
+      "vector": "fb_feed_image"
+    }
+  ],
+  "note": "TEST VECTORS ONLY. The seed below is public and fixed; it never signs a real approval.",
+  "packs": [
+    {
+      "pack_id": "fixture-pack",
+      "regulated": false,
+      "rules": [],
+      "version": "2026-11-26.1"
+    }
+  ],
+  "record_version": "social-ops-approval-record/1",
+  "schema_version": "social-ops-approval-golden/1",
+  "signature": "Ed25519 (RFC 8032) over the canonical attestation bytes; attestation.envelope_sha256 binds the envelope",
+  "test_key": {
+    "actor": "Fixture Operator",
+    "key_id": "ed25519:56475aa75463474c",
+    "public_key_b64": "A6EHv/POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg=",
+    "role": "operator",
+    "seed_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
+  },
+  "vectors": {
+    "fb_feed_image": {
+      "attestation": {
+        "actor": "Fixture Operator",
+        "approved_at": "2026-12-03T09:00:00Z",
+        "envelope_sha256": "df54212d029e4fef5543cdd43992d3c3b503712253668f5be812d7e68394bc8c",
+        "evidence": {
+          "board_ref": "fixture-board"
+        },
+        "key_id": "ed25519:56475aa75463474c",
+        "kind": "approve",
+        "operation_key": "fixture-brand/fb-main/0123456789ab/schedule_post",
+        "presence": "test",
+        "sequence": 1,
+        "supersedes": null
+      },
+      "canonical_attestation": "{\"actor\":\"Fixture Operator\",\"approved_at\":\"2026-12-03T09:00:00Z\",\"envelope_sha256\":\"df54212d029e4fef5543cdd43992d3c3b503712253668f5be812d7e68394bc8c\",\"evidence\":{\"board_ref\":\"fixture-board\"},\"key_id\":\"ed25519:56475aa75463474c\",\"kind\":\"approve\",\"operation_key\":\"fixture-brand/fb-main/0123456789ab/schedule_post\",\"presence\":\"test\",\"sequence\":1,\"supersedes\":null}",
+      "canonical_envelope": "{\"binding_id\":\"fixture-brand/fb-main\",\"caption_bytes\":81,\"caption_sha256\":\"104c788c19a332f05f4ee21d1f254e7c50334220bde60a2b61b3ad810ad33b34\",\"envelope_version\":\"social-ops-approval/1\",\"expires_utc\":\"2026-12-08T11:00:00Z\",\"format\":\"feed_image\",\"instance_id\":\"fixture-brand\",\"language\":\"fr\",\"media\":[\"sha256:c7a8e7458fb651629fd604c60dd05817a6ed3cb8197388940bd96899efca7ec9\"],\"operation\":\"schedule_post\",\"packet_revision\":\"481d9019488ea3a5387e84b199f313f8ebee313680056f8773e15dab9a6039d1\",\"platform\":\"facebook_page\",\"policy_decision\":{\"action\":\"schedule_post\",\"counsel_sha256\":\"74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b\",\"material_questions\":[],\"packs\":[{\"pack_id\":\"fixture-pack\",\"sha256\":\"102368591aa5111ac2833bfd9d54392eeff74a20ce486fe3f31c5eafe425e816\",\"version\":\"2026-11-26.1\"}]},\"post_id\":\"0123456789ab\",\"public_fields\":{\"ai_label\":false,\"alt_text\":[\"Fixture team photo\"],\"interaction\":\"platform_default\",\"links\":[],\"promotional\":false,\"visibility\":\"public\"},\"rights_evidence\":[{\"expires\":null,\"handle\":\"sha256:c7a8e7458fb651629fd604c60dd05817a6ed3cb8197388940bd96899efca7ec9\",\"platforms\":[\"facebook_page\",\"instagram_professional\"],\"source\":\"fixture: own production\"}],\"route\":\"graph_native_schedule\",\"slot_id\":\"2026-12-07-fb-main-tue-1200\",\"slot_local\":\"2026-12-08T12:00:00+01:00\",\"slot_utc\":\"2026-12-08T11:00:00Z\",\"target\":{\"account_id\":\"fb-main\",\"account_platform_id\":\"100000000000001\",\"comment_id\":null,\"parent_post_id\":null},\"timezone\":\"Europe/Brussels\"}",
+      "envelope": {
+        "binding_id": "fixture-brand/fb-main",
+        "caption_bytes": 81,
+        "caption_sha256": "104c788c19a332f05f4ee21d1f254e7c50334220bde60a2b61b3ad810ad33b34",
+        "envelope_version": "social-ops-approval/1",
+        "expires_utc": "2026-12-08T11:00:00Z",
+        "format": "feed_image",
+        "instance_id": "fixture-brand",
+        "language": "fr",
+        "media": [
+          "sha256:c7a8e7458fb651629fd604c60dd05817a6ed3cb8197388940bd96899efca7ec9"
+        ],
+        "operation": "schedule_post",
+        "packet_revision": "481d9019488ea3a5387e84b199f313f8ebee313680056f8773e15dab9a6039d1",
+        "platform": "facebook_page",
+        "policy_decision": {
+          "action": "schedule_post",
+          "counsel_sha256": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
+          "material_questions": [],
+          "packs": [
+            {
+              "pack_id": "fixture-pack",
+              "sha256": "102368591aa5111ac2833bfd9d54392eeff74a20ce486fe3f31c5eafe425e816",
+              "version": "2026-11-26.1"
+            }
+          ]
+        },
+        "post_id": "0123456789ab",
+        "public_fields": {
+          "ai_label": false,
+          "alt_text": [
+            "Fixture team photo"
+          ],
+          "interaction": "platform_default",
+          "links": [],
+          "promotional": false,
+          "visibility": "public"
+        },
+        "rights_evidence": [
+          {
+            "expires": null,
+            "handle": "sha256:c7a8e7458fb651629fd604c60dd05817a6ed3cb8197388940bd96899efca7ec9",
+            "platforms": [
+              "facebook_page",
+              "instagram_professional"
+            ],
+            "source": "fixture: own production"
+          }
+        ],
+        "route": "graph_native_schedule",
+        "slot_id": "2026-12-07-fb-main-tue-1200",
+        "slot_local": "2026-12-08T12:00:00+01:00",
+        "slot_utc": "2026-12-08T11:00:00Z",
+        "target": {
+          "account_id": "fb-main",
+          "account_platform_id": "100000000000001",
+          "comment_id": null,
+          "parent_post_id": null
+        },
+        "timezone": "Europe/Brussels"
+      },
+      "envelope_sha256": "df54212d029e4fef5543cdd43992d3c3b503712253668f5be812d7e68394bc8c",
+      "inputs": {
+        "expires_utc": "2026-12-08T11:00:00Z",
+        "packet_revision": "481d9019488ea3a5387e84b199f313f8ebee313680056f8773e15dab9a6039d1",
+        "post": {
+          "account_id": "fb-main",
+          "ai_label": false,
+          "caption": "Belle victoire à domicile ! ⚽ Le résumé : https://fixture-brand.example/news",
+          "creatives": [
+            {
+              "ai_generated": false,
+              "alt_text": "Fixture team photo",
+              "depicts_character": false,
+              "depicts_person": false,
+              "duration_s": null,
+              "handle": "sha256:c7a8e7458fb651629fd604c60dd05817a6ed3cb8197388940bd96899efca7ec9",
+              "height": 1350,
+              "kind": "image",
+              "rights": {
+                "expires": null,
+                "platforms": [
+                  "facebook_page",
+                  "instagram_professional"
+                ],
+                "source": "fixture: own production"
+              },
+              "width": 1080
+            }
+          ],
+          "format": "feed_image",
+          "language": "fr",
+          "links": [],
+          "platform": "facebook_page",
+          "post_id": "0123456789ab",
+          "promotional": false,
+          "slot_id": "2026-12-07-fb-main-tue-1200",
+          "slot_local": "2026-12-08T12:00:00+01:00",
+          "slot_utc": "2026-12-08T11:00:00Z"
+        }
+      },
+      "operation_key": "fixture-brand/fb-main/0123456789ab/schedule_post",
+      "signature_b64": "UaP2aqSECqyIy0+uQSm5hsipriL24LRfxP+Or5QC3y0uLzlciJQNRe+c19QW/Q6krflig4r/kKCFpauVBF0RBA=="
+    },
+    "ig_carousel_dst_overlap": {
+      "attestation": {
+        "actor": "Fixture Operator",
+        "approved_at": "2026-12-03T09:00:00Z",
+        "envelope_sha256": "c262f2fd5080b472cdb9648724ce565067c2fc85eb1a4da6f0b3481a546c2255",
+        "evidence": {
+          "board_ref": "fixture-board"
+        },
+        "key_id": "ed25519:56475aa75463474c",
+        "kind": "approve",
+        "operation_key": "fixture-brand/ig-main/ba9876543210/publish_post",
+        "presence": "test",
+        "sequence": 1,
+        "supersedes": null
+      },
+      "canonical_attestation": "{\"actor\":\"Fixture Operator\",\"approved_at\":\"2026-12-03T09:00:00Z\",\"envelope_sha256\":\"c262f2fd5080b472cdb9648724ce565067c2fc85eb1a4da6f0b3481a546c2255\",\"evidence\":{\"board_ref\":\"fixture-board\"},\"key_id\":\"ed25519:56475aa75463474c\",\"kind\":\"approve\",\"operation_key\":\"fixture-brand/ig-main/ba9876543210/publish_post\",\"presence\":\"test\",\"sequence\":1,\"supersedes\":null}",
+      "canonical_envelope": "{\"binding_id\":\"fixture-brand/ig-main\",\"caption_bytes\":56,\"caption_sha256\":\"6185b6d84f68bd9ecafa9c723397ce393818d97321356e99485afa9040aefd3c\",\"envelope_version\":\"social-ops-approval/1\",\"expires_utc\":\"2026-10-25T01:30:00Z\",\"format\":\"carousel\",\"instance_id\":\"fixture-brand\",\"language\":\"nl\",\"media\":[\"sha256:c7a8e7458fb651629fd604c60dd05817a6ed3cb8197388940bd96899efca7ec9\",\"sha256:b7f53714d7b21dc68aecd9cfefe759aa3eb8b94618630c8e04f6dfad44331bea\"],\"operation\":\"publish_post\",\"packet_revision\":\"481d9019488ea3a5387e84b199f313f8ebee313680056f8773e15dab9a6039d1\",\"platform\":\"instagram_professional\",\"policy_decision\":{\"action\":\"publish_post\",\"counsel_sha256\":\"74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b\",\"material_questions\":[],\"packs\":[{\"pack_id\":\"fixture-pack\",\"sha256\":\"102368591aa5111ac2833bfd9d54392eeff74a20ce486fe3f31c5eafe425e816\",\"version\":\"2026-11-26.1\"}]},\"post_id\":\"ba9876543210\",\"public_fields\":{\"ai_label\":true,\"alt_text\":[\"Eerste beeld\",\"Tweede beeld\"],\"interaction\":\"platform_default\",\"links\":[],\"promotional\":false,\"visibility\":\"public\"},\"rights_evidence\":[{\"expires\":null,\"handle\":\"sha256:c7a8e7458fb651629fd604c60dd05817a6ed3cb8197388940bd96899efca7ec9\",\"platforms\":[\"facebook_page\",\"instagram_professional\"],\"source\":\"fixture: own production\"},{\"expires\":null,\"handle\":\"sha256:b7f53714d7b21dc68aecd9cfefe759aa3eb8b94618630c8e04f6dfad44331bea\",\"platforms\":[\"facebook_page\",\"instagram_professional\"],\"source\":\"fixture: own production\"}],\"route\":\"human_handoff\",\"slot_id\":\"2026-10-19-ig-main-sun-0230\",\"slot_local\":\"2026-10-25T02:30:00+01:00\",\"slot_utc\":\"2026-10-25T01:30:00Z\",\"target\":{\"account_id\":\"ig-main\",\"account_platform_id\":\"170000000000001\",\"comment_id\":null,\"parent_post_id\":null},\"timezone\":\"Europe/Brussels\"}",
+      "envelope": {
+        "binding_id": "fixture-brand/ig-main",
+        "caption_bytes": 56,
+        "caption_sha256": "6185b6d84f68bd9ecafa9c723397ce393818d97321356e99485afa9040aefd3c",
+        "envelope_version": "social-ops-approval/1",
+        "expires_utc": "2026-10-25T01:30:00Z",
+        "format": "carousel",
+        "instance_id": "fixture-brand",
+        "language": "nl",
+        "media": [
+          "sha256:c7a8e7458fb651629fd604c60dd05817a6ed3cb8197388940bd96899efca7ec9",
+          "sha256:b7f53714d7b21dc68aecd9cfefe759aa3eb8b94618630c8e04f6dfad44331bea"
+        ],
+        "operation": "publish_post",
+        "packet_revision": "481d9019488ea3a5387e84b199f313f8ebee313680056f8773e15dab9a6039d1",
+        "platform": "instagram_professional",
+        "policy_decision": {
+          "action": "publish_post",
+          "counsel_sha256": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
+          "material_questions": [],
+          "packs": [
+            {
+              "pack_id": "fixture-pack",
+              "sha256": "102368591aa5111ac2833bfd9d54392eeff74a20ce486fe3f31c5eafe425e816",
+              "version": "2026-11-26.1"
+            }
+          ]
+        },
+        "post_id": "ba9876543210",
+        "public_fields": {
+          "ai_label": true,
+          "alt_text": [
+            "Eerste beeld",
+            "Tweede beeld"
+          ],
+          "interaction": "platform_default",
+          "links": [],
+          "promotional": false,
+          "visibility": "public"
+        },
+        "rights_evidence": [
+          {
+            "expires": null,
+            "handle": "sha256:c7a8e7458fb651629fd604c60dd05817a6ed3cb8197388940bd96899efca7ec9",
+            "platforms": [
+              "facebook_page",
+              "instagram_professional"
+            ],
+            "source": "fixture: own production"
+          },
+          {
+            "expires": null,
+            "handle": "sha256:b7f53714d7b21dc68aecd9cfefe759aa3eb8b94618630c8e04f6dfad44331bea",
+            "platforms": [
+              "facebook_page",
+              "instagram_professional"
+            ],
+            "source": "fixture: own production"
+          }
+        ],
+        "route": "human_handoff",
+        "slot_id": "2026-10-19-ig-main-sun-0230",
+        "slot_local": "2026-10-25T02:30:00+01:00",
+        "slot_utc": "2026-10-25T01:30:00Z",
+        "target": {
+          "account_id": "ig-main",
+          "account_platform_id": "170000000000001",
+          "comment_id": null,
+          "parent_post_id": null
+        },
+        "timezone": "Europe/Brussels"
+      },
+      "envelope_sha256": "c262f2fd5080b472cdb9648724ce565067c2fc85eb1a4da6f0b3481a546c2255",
+      "inputs": {
+        "expires_utc": "2026-10-25T01:30:00Z",
+        "packet_revision": "481d9019488ea3a5387e84b199f313f8ebee313680056f8773e15dab9a6039d1",
+        "post": {
+          "account_id": "ig-main",
+          "ai_label": true,
+          "caption": "Tweede helft van de nacht: dezelfde klok, een ander uur.",
+          "creatives": [
+            {
+              "ai_generated": false,
+              "alt_text": "Eerste beeld",
+              "depicts_character": false,
+              "depicts_person": false,
+              "duration_s": null,
+              "handle": "sha256:c7a8e7458fb651629fd604c60dd05817a6ed3cb8197388940bd96899efca7ec9",
+              "height": 1350,
+              "kind": "image",
+              "rights": {
+                "expires": null,
+                "platforms": [
+                  "facebook_page",
+                  "instagram_professional"
+                ],
+                "source": "fixture: own production"
+              },
+              "width": 1080
+            },
+            {
+              "ai_generated": false,
+              "alt_text": "Tweede beeld",
+              "depicts_character": false,
+              "depicts_person": false,
+              "duration_s": null,
+              "handle": "sha256:b7f53714d7b21dc68aecd9cfefe759aa3eb8b94618630c8e04f6dfad44331bea",
+              "height": 1350,
+              "kind": "image",
+              "rights": {
+                "expires": null,
+                "platforms": [
+                  "facebook_page",
+                  "instagram_professional"
+                ],
+                "source": "fixture: own production"
+              },
+              "width": 1080
+            }
+          ],
+          "format": "carousel",
+          "language": "nl",
+          "links": [],
+          "platform": "instagram_professional",
+          "post_id": "ba9876543210",
+          "promotional": false,
+          "slot_id": "2026-10-19-ig-main-sun-0230",
+          "slot_local": "2026-10-25T02:30:00+01:00",
+          "slot_utc": "2026-10-25T01:30:00Z"
+        }
+      },
+      "operation_key": "fixture-brand/ig-main/ba9876543210/publish_post",
+      "signature_b64": "COsyaJF7BmR+D8EHqeD40fKkOc+6URVIEEIuWjTrHGugpC17BsY56e5clm7oNErtVgluDheTVrn50SOZJ8V5AQ=="
+    }
+  }
+}
