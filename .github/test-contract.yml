@@ -17,7 +17,7 @@ suites:
     paths: ["tests/contract/**"]
     source_inputs: ["src/**", "pyproject.toml", "uv.lock"]
     required: true
-    minimum_executed: 289
+    minimum_executed: 350
     execution_step: contract
   - id: postgres
     owner: stromy-org/linkedin-publish
@@ -26,5 +26,5 @@ suites:
     paths: ["tests/integration/**"]
     source_inputs: ["src/**", "tests/**", "pyproject.toml", "uv.lock"]
     required: true
-    minimum_executed: 49
+    minimum_executed: 54
     execution_step: tests
