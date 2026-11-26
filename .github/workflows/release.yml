@@ -185,7 +185,7 @@ jobs:
       - name: Lint
         run: uv run ruff check
       - name: Type check
-        run: uv run pyright src/linkedin_publish
+        run: uv run pyright src/linkedin_publish src/social_publish
       - name: Tests
         env:
           LINKEDIN_PUBLISH_TEST_DSN: postgres://postgres:postgres@localhost:5432/postgres

@@ -96,7 +96,7 @@ jobs:
       - name: Lint
         run: uv run ruff check
       - name: Type check
-        run: uv run pyright src/linkedin_publish
+        run: uv run pyright src/linkedin_publish src/social_publish
       - name: Unit tests
         run: |
           rm -f .unit-junit.xml
