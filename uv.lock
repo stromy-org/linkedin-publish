@@ -740,7 +740,7 @@ wheels = [
 
 [[package]]
 name = "linkedin-publish"
-version = "0.7.0"
+version = "0.8.0"
 source = { editable = "." }
 dependencies = [
     { name = "click" },
@@ -753,10 +753,14 @@ all = [
     { name = "aiohttp" },
     { name = "asyncpg" },
     { name = "azure-identity" },
+    { name = "cryptography" },
 ]
 azure = [
     { name = "aiohttp" },
     { name = "azure-identity" },
+]
+meta = [
+    { name = "cryptography" },
 ]
 postgres = [
     { name = "asyncpg" },
@@ -776,11 +780,12 @@ requires-dist = [
     { name = "asyncpg", marker = "extra == 'postgres'", specifier = ">=0.29" },
     { name = "azure-identity", marker = "extra == 'azure'", specifier = ">=1.17" },
     { name = "click", specifier = ">=8.0" },
+    { name = "cryptography", marker = "extra == 'meta'", specifier = ">=42" },
     { name = "httpx", specifier = ">=0.27" },
-    { name = "linkedin-publish", extras = ["postgres", "azure"], marker = "extra == 'all'" },
+    { name = "linkedin-publish", extras = ["postgres", "azure", "meta"], marker = "extra == 'all'" },
     { name = "pydantic", specifier = ">=2.7" },
 ]
-provides-extras = ["postgres", "azure", "all"]
+provides-extras = ["postgres", "azure", "meta", "all"]
 
 [package.metadata.requires-dev]
 dev = [

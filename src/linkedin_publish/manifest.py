@@ -17,13 +17,13 @@ a different digest, and a different digest has no approval.
 
 from __future__ import annotations
 
-import hashlib
-import json
 from datetime import datetime, timedelta, timezone
 from typing import Annotated, Literal, Self
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+from social_publish.canonical import canonical_digest, canonical_json
 
 from ._json import loads_object
 from .models import MediaDraft, PostDraft, Visibility
@@ -43,27 +43,6 @@ SCHEMA_VERSION = "1.0"
 #: Default approval window: a post that did not go out within a day of its slot
 #: needs a fresh decision, not a silent late publication.
 DEFAULT_EXPIRY = timedelta(hours=24)
-
-
-def canonical_json(payload: object) -> bytes:
-    """One canonical serialization, used for every digest in this system.
-
-    Sorted keys, no insignificant whitespace, UTF-8, non-ASCII preserved.
-    Preserving non-ASCII matters: escaping it would make two byte-identical
-    posts with an emoji hash differently depending on the writer.
-    """
-    return json.dumps(
-        payload,
-        sort_keys=True,
-        separators=(",", ":"),
-        ensure_ascii=False,
-        default=str,
-    ).encode("utf-8")
-
-
-def canonical_digest(payload: object) -> str:
-    """SHA-256 over `canonical_json(payload)`, lowercase hex."""
-    return hashlib.sha256(canonical_json(payload)).hexdigest()
 
 
 def _resolve_wall_time(value: datetime, tz_name: str, *, field_name: str) -> datetime:

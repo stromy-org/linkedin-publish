@@ -1035,7 +1035,7 @@ def publish() -> None:
     "--dsn",
     envvar="LINKEDIN_PUBLISH_DSN",
     required=True,
-    help="A DSN whose role may run the send transitions and quota counters (not the writer role alone).",
+    help="A DSN acting as linkedin_publish_commissioner (migration 0006): send transitions, the grant and quota only.",
 )
 def publish_due_command(binding_id: str, publication_id: str, actor: str, dsn: str) -> None:
     """Send ONE commissioned canary through the shared service, as the commissioning actor.
