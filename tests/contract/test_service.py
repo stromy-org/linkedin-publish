@@ -91,6 +91,7 @@ async def seeded(
     *,
     approved: bool = True,
     records: list[PublicationRecord] | None = None,
+    commissioning_actor: str | None = None,
     **binding_kwargs: object,
 ):  # noqa: ANN201
     store = InMemoryPublicationStore()
@@ -107,6 +108,7 @@ async def seeded(
                 access_token="t", client_id="app-personal", client_secret="s", credential_version="v1"
             )
         ),
+        commissioning_actor=commissioning_actor,
     )
     return store, client, log, service, binding(**binding_kwargs)  # type: ignore[arg-type]
 
@@ -246,8 +248,12 @@ async def test_publishing_disabled_blocks_the_send_with_zero_requests() -> None:
 
 
 async def test_a_commissioning_grant_permits_exactly_one_send_while_disabled() -> None:
-    """The C1 canary: one approved publication out, publishing still off."""
-    store, client, log, service, bound = await seeded(publish_enabled=False)
+    """The C1 canary: one approved publication out, publishing still off.
+
+    Sent by a service built for the commissioning actor the grant names (the
+    operator CLI's `publish due`); the scheduler cannot use a grant at all.
+    """
+    store, client, log, service, bound = await seeded(publish_enabled=False, commissioning_actor="william@stromy")
     await store.put_grant(
         CommissioningGrant(
             grant_id="grant-1",
@@ -276,6 +282,7 @@ async def test_a_consumed_grant_cannot_license_a_second_send() -> None:
     store, client, log, service, bound = await seeded(
         publish_enabled=False,
         records=[record(), record(publication_id="pub-2", post_id="post-2")],
+        commissioning_actor="william@stromy",
     )
     for publication_id in ("pub-1", "pub-2"):
         await store.put_grant(
@@ -301,7 +308,7 @@ async def test_a_consumed_grant_cannot_license_a_second_send() -> None:
 
 
 async def test_an_expired_grant_does_not_license_a_send() -> None:
-    store, client, log, service, bound = await seeded(publish_enabled=False)
+    store, client, log, service, bound = await seeded(publish_enabled=False, commissioning_actor="william@stromy")
     await store.put_grant(
         CommissioningGrant(
             grant_id="grant-1",
@@ -321,7 +328,7 @@ async def test_an_expired_grant_does_not_license_a_send() -> None:
 
 
 async def test_a_grant_for_another_digest_does_not_license_a_send() -> None:
-    store, client, log, service, bound = await seeded(publish_enabled=False)
+    store, client, log, service, bound = await seeded(publish_enabled=False, commissioning_actor="william@stromy")
     await store.put_grant(
         CommissioningGrant(
             grant_id="grant-1",

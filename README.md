@@ -120,7 +120,14 @@ adapter under an existing id is refused: that is a new binding with fresh
 approvals, not an edit. For the CMA app, which has no OIDC product, pass
 `--no-identity`; its identity then stays unproven, which keeps it unactivatable.
 
-### The canary: import, approve, commission
+### The canary: import, approve, commission, send, enable
+
+A fresh binding is disabled with every capability `unknown`. The canary is the
+one send allowed on it: a grant for exactly that publication, digest, binding
+and capability, issued to your commissioning identity, licenses that single
+send through the shared service, and is consumed at the durable `sending`
+transition. The scheduler and the MCP can never use a grant. A text canary
+enables text and nothing else (ORG-PLAN-285 C1 steps 7 and 8).
 
 ```bash
 # 4. Store the post as an UNAPPROVED pending publication. The CLI twin of the
@@ -134,6 +141,20 @@ uv run linkedin-publish approval record --publication <pub id> --digest <digest>
   --binding <id> --actor <you> --dsn "$WRITER_DSN"
 uv run linkedin-publish account commission --publication <pub id> --digest <digest> \
   --binding <id> --capability text --actor <you> --dsn "$WRITER_DSN"
+
+# 6. Send that ONE publication, as the same --actor, with the measured credential
+#    in the environment (LINKEDIN_CREDENTIAL_VERSION must be the binding's).
+#    Shows the binding, capability and grant, then asks. Exit 0 published,
+#    1 refused, 3 outcome unknown: look at LinkedIn, then `publication reconcile`.
+#    The DSN's role must run the send transitions and quota counters (the
+#    runtime role's grants, or the schema owner); the writer role alone cannot.
+uv run linkedin-publish publish due --binding <id> --publication <pub id> --actor <you> --dsn "$LEDGER_DSN"
+
+# 7. Enable from the receipt: refused unless <pub id> is `published` on this
+#    binding, of exactly this capability's shape, and the credential is measured
+#    healthy. Shows before -> after, then asks. Sets the capability `enabled`
+#    with the publication as evidence, and turns publishing on.
+uv run linkedin-publish account enable --binding <id> --capability text --evidence <pub id> --dsn "$WRITER_DSN"
 ```
 
 ### Renewal (token rotation)

@@ -123,10 +123,23 @@ class LinkedInClient:
         """The adapter this binding is configured for. Never inferred."""
         return self._ugc if binding.adapter == "share_ugc" else self._rest
 
-    def check(self, binding: AccountBinding, draft: PostDraft) -> str:
+    def check(
+        self,
+        binding: AccountBinding,
+        draft: PostDraft,
+        *,
+        commissioned: Capability | None = None,
+    ) -> str:
         """Assert the binding may publish this draft. Returns the capability name.
 
         Raises before any network call, so a refusal costs nothing.
+
+        `commissioned` is the one exception to "enabled or refused": the
+        capability a verified, unconsumed commissioning grant licenses for this
+        single send (plan C1 step 7). It lets an `unknown` capability through for
+        that capability only — never an `unavailable` one, and never another
+        capability. Only `PublicationService` passes it, after matching the grant
+        to the publication, digest, binding, capability and commissioning actor.
         """
         if not binding.may_author(draft.author_urn):
             raise AuthorForbidden(
@@ -134,7 +147,8 @@ class LinkedInClient:
             )
         capability = draft.required_capability
         state = binding.capability_state(capability)
-        if state != "enabled":
+        licensed = commissioned == capability and state == "unknown"
+        if state != "enabled" and not licensed:
             raise CapabilityUnavailable(
                 f"capability {capability!r} is {state} on binding {binding.binding_id}; "
                 "it is enabled by recorded commissioning evidence, not by a successful call of another shape",
@@ -154,13 +168,14 @@ class LinkedInClient:
         *,
         reader: AssetReader | None = None,
         subject_id: str | None = None,
+        commissioned: Capability | None = None,
     ) -> PreparedPost:
         """Validate everything that can be validated offline.
 
         This is the dry-run path in full: zero LinkedIn requests, zero uploads,
         zero quota consumed, zero durable mutation.
         """
-        capability = self.check(binding, draft)
+        capability = self.check(binding, draft, commissioned=commissioned)
         asset: ResolvedAsset | None = None
         media = draft.media
         ref = _asset_ref(media) if media is not None else None
@@ -181,14 +196,17 @@ class LinkedInClient:
         reader: AssetReader | None = None,
         subject_id: str | None = None,
         now: datetime | None = None,
+        commissioned: Capability | None = None,
     ) -> PublishReceipt:
         """Upload any media, then create the post. One attempt, no fallback.
 
         The caller is responsible for the durable state transition *before*
         calling this — by the time we are here, a crash must leave an `unknown`
-        record, not a `pending` one.
+        record, not a `pending` one. `commissioned` is as for `check`.
         """
-        prepared = await self.prepare(binding, draft, reader=reader, subject_id=subject_id)
+        prepared = await self.prepare(
+            binding, draft, reader=reader, subject_id=subject_id, commissioned=commissioned
+        )
         adapter = self.adapter_for(binding)
 
         moment = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)

@@ -10,6 +10,14 @@ negotiable:
 * `account commission` writes a grant scoped to one stored, approved
   publication, one digest, one binding and one capability, expiring shortly. A
   scheduler identity cannot reach this command's writer role.
+* `publish due` is the one route by which a commissioning grant is used: it sends
+  that one granted, approved, due publication through the shared service, as
+  the commissioning actor the grant names, with the local credential. The
+  scheduler and the MCP never construct a service that can use a grant.
+* `account enable` is the first enablement, from the canary's own receipt: it
+  marks exactly the receipt's capability `enabled`, names the publication as its
+  evidence, and turns publishing on — only once that receipt is `published` on
+  the same binding and the current credential is measured healthy.
 * `publication reconcile` records what the operator found on LinkedIn for an
   `unknown` send — the post URN, or a failure reason. Nothing else moves an
   `unknown` record, by design.
@@ -46,18 +54,20 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, get_args
 
 import click
 import httpx
 
 from . import __version__
 from .auth import Credentials, TokenObservation, inspect_credentials, member_sub_from_author
-from .bindings import IDENTITY_FIELDS, BindingStore, reenable_problems
+from .bindings import IDENTITY_FIELDS, BindingStore, enable_problems, reenable_problems
 from .client import default_limits, default_timeout
+from .errors import LinkedInPublishError, PublishOutcomeUnknown
 from .health import ObservationCacheUnavailable, assess, expiry_warning
+from .limits import BudgetStore
 from .manifest import PublishManifest
-from .models import AccountBinding
+from .models import AccountBinding, Capability, PublishReceipt
 from .store import (
     ApprovalRecord,
     CommissioningGrant,
@@ -74,6 +84,9 @@ GRANT_TTL = timedelta(minutes=30)
 
 #: The personal app's scopes (plan C1 step 3). Not `email`: it is not needed.
 PERSONAL_SCOPES: tuple[str, ...] = ("openid", "profile", "w_member_social")
+
+#: Every capability name, for the commands that take one.
+CAPABILITIES: tuple[str, ...] = get_args(Capability)
 
 #: A credential *reference*: a vault secret name or a short URI. A LinkedIn
 #: access token is hundreds of characters, so this shape cannot hold one.
@@ -165,6 +178,24 @@ async def _publication_store(dsn: str) -> AsyncIterator[PublicationStore]:
     try:
         await check_compatible(pool)
         yield PostgresPublicationStore(pool)
+    finally:
+        await pool.close()
+
+
+@asynccontextmanager
+async def _budget_store(dsn: str) -> AsyncIterator[BudgetStore]:
+    """Open the shared request counters for one command. A seam for tests.
+
+    The same Postgres counters the scheduler and the MCP reserve against: a CLI
+    send is not a free extra quota.
+    """
+    from .postgres import PostgresBudgetStore, check_compatible, require_asyncpg
+
+    asyncpg = require_asyncpg()
+    pool = await asyncpg.create_pool(dsn, min_size=1, max_size=2, **_pg_connect_kwargs())
+    try:
+        await check_compatible(pool)
+        yield PostgresBudgetStore(pool)
     finally:
         await pool.close()
 
@@ -829,7 +860,12 @@ def account_status(binding_id: str, dsn: str, as_json: bool) -> None:
 @click.option("--publication", "publication_id", required=True)
 @click.option("--digest", "expected_digest", required=True, help="The digest you reviewed.")
 @click.option("--binding", "binding_id", required=True)
-@click.option("--capability", required=True)
+@click.option(
+    "--capability",
+    required=True,
+    type=click.Choice(CAPABILITIES),
+    help="The capability this publication's shape needs (a text canary: text).",
+)
 @click.option("--actor", required=True, help="The operator commissioning identity.")
 @click.option("--dsn", envvar="LINKEDIN_PUBLISH_DSN", required=True, help="Writer-role DSN.")
 def account_commission(
@@ -850,6 +886,13 @@ def account_commission(
     record = asyncio.run(_load_publication(dsn, publication_id))
     _show_stored(record)
     _require_match(record, binding_id=binding_id, expected_digest=expected_digest)
+    if record.draft.required_capability != capability:
+        click.echo(
+            f"ABORT: {publication_id} is a {record.draft.required_capability!r} post; a grant for "
+            f"{capability!r} would license nothing. A canary enables its own shape only.",
+            err=True,
+        )
+        sys.exit(1)
 
     async def approved() -> bool:
         async with _publication_store(dsn) as store:
@@ -886,6 +929,222 @@ def account_commission(
 
     asyncio.run(write())
     click.echo(f"granted {grant.grant_id} (expires {grant.expires_at.isoformat()})")
+    click.echo(
+        f"next: `publish due --binding {binding_id} --publication {publication_id} --actor {actor}` "
+        "with the local credential in the environment"
+    )
+
+
+@account.command("enable")
+@click.option("--binding", "binding_id", required=True)
+@click.option("--capability", required=True, type=click.Choice(CAPABILITIES), help="The capability the receipt proved.")
+@click.option(
+    "--evidence",
+    "evidence_publication_id",
+    required=True,
+    help="The canary publication whose recorded receipt proves the capability.",
+)
+@click.option("--dsn", envvar="LINKEDIN_PUBLISH_DSN", required=True, help="Writer-role DSN.")
+@click.option("--dry-run", is_flag=True, help="Show the change and write nothing.")
+def account_enable(binding_id: str, capability: str, evidence_publication_id: str, dsn: str, dry_run: bool) -> None:
+    """Enable ONE capability from its canary receipt, and turn publishing on.
+
+    Plan C1 step 8. Refuses unless the evidence publication is a `published`
+    receipt with a post URN on this binding, of exactly this capability's shape,
+    the capability is still `unknown`, the binding is not held after a rotation,
+    and the current credential is measured healthy. A text canary enables text
+    and nothing else.
+    """
+    cap: Capability = capability  # type: ignore[assignment] - narrowed by click.Choice
+
+    async def _read() -> tuple[AccountBinding | None, TokenObservation | None, PublicationRecord | None]:
+        async with _binding_store(dsn) as store:
+            binding = await store.get(binding_id)
+            observation = None
+            if binding is not None:
+                try:
+                    observation = await store.observations.get(binding_id, binding.credential_version)
+                except ObservationCacheUnavailable:
+                    observation = None
+        async with _publication_store(dsn) as ledger:
+            evidence = await ledger.get_publication(evidence_publication_id)
+        return binding, observation, evidence
+
+    binding, observation, evidence = asyncio.run(_read())
+    if binding is None:
+        click.echo(f"ABORT: binding {binding_id!r} is not registered.", err=True)
+        sys.exit(1)
+    problems = enable_problems(
+        binding, evidence, capability=cap, observation=observation, now=datetime.now(timezone.utc)
+    )
+    if problems:
+        click.echo(f"REFUSED  {binding_id} capability {capability} stays {binding.capability_state(cap)}:", err=True)
+        for problem in problems:
+            click.echo(f"  - {problem}", err=True)
+        sys.exit(1)
+    assert evidence is not None and evidence.published_at is not None  # noqa: S101 - enable_problems checked it
+
+    click.echo("First enablement from a canary receipt.")
+    click.echo(f"  binding            {binding.binding_id}   credential {binding.credential_version}")
+    click.echo(f"  evidence           {evidence.publication_id}   {evidence.post_urn}")
+    click.echo(f"  published at       {evidence.published_at.isoformat()}   via {evidence.adapter or binding.adapter}")
+    click.echo(f"  capability {capability:<7} {binding.capability_state(cap)}  ->  enabled")
+    click.echo(f"  publish_enabled    {binding.publish_enabled}  ->  True")
+    others = [f"{item.capability}={item.state}" for item in binding.capabilities if item.capability != capability]
+    click.echo(f"  other capabilities {', '.join(others) or 'none (all unknown)'}  (unchanged)")
+    if dry_run:
+        click.echo("dry run — nothing written")
+        return
+    click.confirm(f"Enable {capability} on {binding_id} and turn publishing on?", abort=True)
+
+    async def _write() -> AccountBinding:
+        async with _binding_store(dsn) as store:
+            return await store.enable_capability(
+                binding_id,
+                capability=cap,
+                evidence_publication_id=evidence.publication_id,
+                observed_at=evidence.published_at,  # type: ignore[arg-type] - asserted above
+                expected_version=binding.credential_version,
+            )
+
+    try:
+        updated = asyncio.run(_write())
+    except StoreConflict as exc:
+        click.echo(f"CONFLICT  {exc}", err=True)
+        sys.exit(1)
+    click.echo(f"enabled  {updated.binding_id}  {capability} (evidence {evidence.publication_id}); publishing ON")
+
+
+# --------------------------------------------------------------------- publish
+
+
+@main.group()
+def publish() -> None:
+    """Send stored, approved publications from the operator's machine."""
+
+
+@publish.command("due")
+@click.option("--binding", "binding_id", required=True)
+@click.option("--publication", "publication_id", required=True, help="The one commissioned publication to send.")
+@click.option(
+    "--actor",
+    required=True,
+    help="The commissioning identity the grant was issued to (`account commission --actor`).",
+)
+@click.option(
+    "--dsn",
+    envvar="LINKEDIN_PUBLISH_DSN",
+    required=True,
+    help="A DSN whose role may run the send transitions and quota counters (not the writer role alone).",
+)
+def publish_due_command(binding_id: str, publication_id: str, actor: str, dsn: str) -> None:
+    """Send ONE commissioned canary through the shared service, as the commissioning actor.
+
+    Plan C1 step 7. The same `PublicationService.publish_one` path the scheduler
+    uses — claim, every gate re-read, durable `sending`, then the request — with
+    the service built for this one actor, so it may use a grant issued to that
+    actor for exactly this publication, digest, binding and capability. The grant
+    is consumed at `sending`. The credential is read from the environment and
+    must be the version the binding names. Exit 0 published, 1 refused or
+    failed, 3 outcome unknown (look at LinkedIn, then `publication reconcile`).
+    """
+    from .auth import StaticCredentialProvider
+    from .client import LinkedInClient
+    from .limits import QuotaLimiter, profile_for
+    from .service import PublicationService
+
+    async def _read() -> tuple[AccountBinding | None, PublicationRecord | None, CommissioningGrant | None]:
+        async with _binding_store(dsn) as store:
+            binding = await store.get(binding_id)
+        async with _publication_store(dsn) as ledger:
+            record = await ledger.get_publication(publication_id)
+            grant = await ledger.get_grant(publication_id)
+        return binding, record, grant
+
+    binding, record, grant = asyncio.run(_read())
+    if binding is None:
+        click.echo(f"ABORT: binding {binding_id!r} is not registered.", err=True)
+        sys.exit(1)
+    if record is None:
+        click.echo(f"ABORT: no publication {publication_id} in the ledger.", err=True)
+        sys.exit(1)
+    _show_stored(record)
+    if record.binding_id != binding_id:
+        click.echo(f"ABORT: {publication_id} belongs to binding {record.binding_id}, not {binding_id}.", err=True)
+        sys.exit(1)
+    if record.state != "pending":
+        click.echo(f"ABORT: {publication_id} is {record.state}; only a pending publication is sent.", err=True)
+        sys.exit(1)
+    credentials = _credentials_from_env()
+    if credentials.credential_version != binding.credential_version:
+        click.echo(
+            f"ABORT: the environment holds credential version {credentials.credential_version!r} but binding "
+            f"{binding_id} names {binding.credential_version!r}. Set LINKEDIN_CREDENTIAL_VERSION to the "
+            "measured version, or rotate first.",
+            err=True,
+        )
+        sys.exit(2)
+
+    capability = record.draft.required_capability
+    click.echo("Send — this is ONE real outward-facing post.")
+    click.echo(f"  binding          {binding.binding_id}   adapter {binding.adapter}")
+    click.echo(f"  publish_enabled  {binding.publish_enabled}")
+    click.echo(f"  capability       {capability} ({binding.capability_state(capability)})")
+    if grant is None:
+        click.echo("  grant            none")
+    else:
+        spent = f"consumed {grant.consumed_at.isoformat()}" if grant.consumed_at else "unconsumed"
+        click.echo(
+            f"  grant            {grant.grant_id} for {grant.capability}, issued to {grant.issued_by}, "
+            f"expires {grant.expires_at.isoformat()}, {spent}"
+        )
+    click.confirm(f"Send publication {publication_id} now, as {actor}?", abort=True)
+
+    async def _send() -> tuple[PublishReceipt | None, LinkedInPublishError | None]:
+        async with _binding_store(dsn) as bindings, _publication_store(dsn) as ledger, _budget_store(dsn) as budgets:
+            async with _http_client() as http:
+                client = LinkedInClient(http=http, limiter=QuotaLimiter(budgets, profile_for(binding.adapter)))
+                service = PublicationService(
+                    ledger,
+                    client,
+                    StaticCredentialProvider(credentials),
+                    actor=actor,
+                    commissioning_actor=actor,
+                    observations=bindings.observations,
+                )
+                try:
+                    receipt = await service.publish_one(
+                        publication_id, binding, expected_digest=record.payload_digest
+                    )
+                except LinkedInPublishError as exc:
+                    return None, exc
+                return receipt, None
+
+    receipt, failure = asyncio.run(_send())
+    if failure is not None:
+        detail = failure.as_dict()
+        verdict = "UNKNOWN" if isinstance(failure, PublishOutcomeUnknown) else "REFUSED"
+        click.echo(f"{verdict}  {publication_id}: {detail.get('code')} — {failure.message}", err=True)
+        for key in ("http_status", "provider_code", "request_id", "capability"):
+            if detail.get(key) is not None:
+                click.echo(f"  {key:<14} {detail[key]}", err=True)
+        if verdict == "UNKNOWN":
+            click.echo(
+                "  never re-send: look at LinkedIn, then `publication reconcile` with what you found", err=True
+            )
+            sys.exit(3)
+        sys.exit(1)
+    assert receipt is not None  # noqa: S101 - one of the two is set
+    click.echo(f"published  {publication_id}")
+    click.echo(f"  post_urn      {receipt.post_urn}")
+    click.echo(f"  permalink     {receipt.permalink}")
+    click.echo(f"  adapter       {receipt.adapter}")
+    click.echo(f"  published_at  {receipt.published_at.isoformat()}")
+    if binding.capability_state(capability) != "enabled":
+        click.echo(
+            f"next: check the post, then `account enable --binding {binding_id} --capability {capability} "
+            f"--evidence {publication_id}`"
+        )
 
 
 # --------------------------------------------------------------------- approval

@@ -17,6 +17,15 @@ dead lease and marks it `unknown` — a human then checks LinkedIn. The
 alternative ordering (send, then record) is what produces duplicate posts.
 
 No database transaction spans a LinkedIn request.
+
+**Commissioning (plan C1 step 7).** A service constructed with a
+`commissioning_actor` — the operator CLI's `publish due`, and nothing else — may
+send one approved, due publication on a disabled binding, or with a still
+`unknown` capability, when the ledger holds an unconsumed, unexpired grant for
+exactly that publication, digest, binding and capability, issued to that same
+actor. The grant is consumed at the durable `sending` transition. The scheduler
+and the MCP never pass a commissioning actor, so they can never use a grant, and
+a binding held after a credential rotation honours none.
 """
 
 from __future__ import annotations
@@ -41,8 +50,9 @@ from .errors import (
 )
 from .health import ObservationCache, ObservationCacheUnavailable, assess
 from .media import AssetReader
-from .models import AccountBinding, DeleteOutcome, PublishReceipt
+from .models import AccountBinding, Capability, DeleteOutcome, PublishReceipt
 from .store import (
+    CommissioningGrant,
     PublicationEvent,
     PublicationRecord,
     PublicationStore,
@@ -130,6 +140,21 @@ class TickResult:
         }
 
 
+def _licensed_capability(
+    binding: AccountBinding, record: PublicationRecord, grant: CommissioningGrant | None
+) -> Capability | None:
+    """The capability a usable grant licenses through `check`: only an `unknown` one.
+
+    An `enabled` capability needs no licence and an `unavailable` one is never
+    licensed — a grant is evidence-gathering for a shape not yet measured, not an
+    override of a recorded refusal.
+    """
+    if grant is None:
+        return None
+    capability = record.draft.required_capability
+    return capability if binding.capability_state(capability) == "unknown" else None
+
+
 class PublicationService:
     """Durable publishing on top of `LinkedInClient`."""
 
@@ -143,7 +168,11 @@ class PublicationService:
         lease: timedelta = DEFAULT_LEASE,
         actor: str = "scheduler",
         observations: ObservationCache | None = None,
+        commissioning_actor: str | None = None,
     ) -> None:
+        if commissioning_actor is not None and not commissioning_actor.strip():
+            raise ValueError("commissioning_actor must name the operator identity the grant was issued to")
+        self._commissioning_actor = commissioning_actor
         self._observations = observations
         self._store = store
         self._client = client
@@ -209,7 +238,10 @@ class PublicationService:
         # malformed batch fails preflight rather than publishing its good half.
         for record in due:
             try:
-                self._client.check(binding, record.draft)
+                grant = await self._usable_grant(record, binding, moment)
+                self._client.check(
+                    binding, record.draft, commissioned=_licensed_capability(binding, record, grant)
+                )
             except CapabilityUnavailable as exc:
                 result.skipped_capability += 1
                 result.failures.append({"publication_id": record.publication_id, **exc.as_dict()})
@@ -291,7 +323,7 @@ class PublicationService:
 
         # --- every gate, re-read at the last possible moment -----------------
         try:
-            grant_id = await self._authorize_send(claimed, binding, moment)
+            grant_id, commissioned = await self._authorize_send(claimed, binding, moment)
         except LinkedInPublishError:
             await self._store.compare_and_set(
                 publication_id,
@@ -322,6 +354,7 @@ class PublicationService:
                 reader=self._reader,
                 subject_id=subject_id or binding.subject_id,
                 now=moment,
+                commissioned=commissioned,
             )
         except QuotaDeferred as exc:
             not_before = exc.not_before if isinstance(exc.not_before, datetime) else None
@@ -368,11 +401,14 @@ class PublicationService:
 
     async def _authorize_send(
         self, record: PublicationRecord, binding: AccountBinding, now: datetime
-    ) -> str | None:
+    ) -> tuple[str | None, Capability | None]:
         """Re-check approval, window, kill switch and capability.
 
-        Returns a commissioning grant id when publishing is disabled but this one
-        record carries a valid grant. Raises otherwise.
+        Returns `(grant_id, commissioned)`. `grant_id` is set when this one
+        record goes out on a commissioning grant — publishing disabled, or its
+        capability still `unknown` — and is consumed at `sending`. `commissioned`
+        is the capability that grant licenses through `check`, or None. Raises
+        otherwise.
         """
         approval = await self._store.get_approval(record.publication_id)
         if approval is None or not approval.is_active(digest=record.payload_digest, now=now):
@@ -386,25 +422,44 @@ class PublicationService:
                 f"publication {record.publication_id} is outside its approved window"
             )
 
-        self._client.check(binding, record.draft)
+        grant = await self._usable_grant(record, binding, now)
+        commissioned = _licensed_capability(binding, record, grant)
+        self._client.check(binding, record.draft, commissioned=commissioned)
         await self._require_credential_not_known_bad(binding, now)
 
-        if binding.publish_enabled:
-            return None
+        if binding.publish_enabled and commissioned is None:
+            return None, None
+        if grant is not None:
+            return grant.grant_id, commissioned
+        raise CapabilityUnavailable(
+            f"publishing is disabled on binding {binding.binding_id} and this publication "
+            "carries no valid commissioning grant for this sender",
+            capability=record.draft.required_capability,
+        )
 
+    async def _usable_grant(
+        self, record: PublicationRecord, binding: AccountBinding, now: datetime
+    ) -> CommissioningGrant | None:
+        """The grant that licenses this one send by this service, or None.
+
+        None unless this service was built with a commissioning actor (the
+        scheduler and the MCP never are), the binding is not held after a
+        rotation, and the stored grant matches the publication, digest, binding,
+        capability and actor, unconsumed and unexpired.
+        """
+        if self._commissioning_actor is None or binding.reenable_after_measure:
+            return None
         grant = await self._store.get_grant(record.publication_id)
-        if grant is not None and grant.is_usable(
+        if grant is None or not grant.is_usable(
             publication_id=record.publication_id,
             digest=record.payload_digest,
             binding_id=record.binding_id,
+            capability=record.draft.required_capability,
+            actor=self._commissioning_actor,
             now=now,
         ):
-            return grant.grant_id
-        raise CapabilityUnavailable(
-            f"publishing is disabled on binding {binding.binding_id} and this publication "
-            "carries no valid commissioning grant",
-            capability=record.draft.required_capability,
-        )
+            return None
+        return grant
 
     async def _require_credential_not_known_bad(self, binding: AccountBinding, now: datetime) -> None:
         """Known expired, revoked, wrong-app or wrong-member credentials block every write.
