@@ -27,6 +27,9 @@ they are, and pending approved records go out only after the re-enable.
 `account status` reads the stored measurement and the expiry warning without a
 credential and without a network call.
 
+`manifest import` stores a manifest as unapproved pending rows (the CLI twin of
+the hosted `import_manifest` tool); it approves nothing.
+
 `manifest validate` is fully offline: no credential is read, no network touched,
 no database opened. That is the command to reach for when checking a manifest.
 """
@@ -55,7 +58,14 @@ from .client import default_limits, default_timeout
 from .health import ObservationCacheUnavailable, assess, expiry_warning
 from .manifest import PublishManifest
 from .models import AccountBinding
-from .store import ApprovalRecord, CommissioningGrant, PublicationRecord, PublicationStore, StoreConflict
+from .store import (
+    ApprovalRecord,
+    CommissioningGrant,
+    PublicationKey,
+    PublicationRecord,
+    PublicationStore,
+    StoreConflict,
+)
 from .version import API_BASE
 
 #: How long a commissioning grant stays usable. Short on purpose — it exists to
@@ -314,6 +324,81 @@ def manifest_validate(path: Path, as_json: bool) -> None:
             f"{entry['commentary_code_points']} cp  {entry['media'] or 'text'}  "
             f"{entry['digest'][:12]}…"
         )
+
+
+@manifest.command("import")
+@click.argument("path", type=click.Path(exists=True, dir_okay=False, path_type=Path))
+@click.option("--binding", "binding_id", required=True, help="The binding every row must name.")
+@click.option("--dsn", envvar="LINKEDIN_PUBLISH_DSN", required=True, help="Writer-role DSN.")
+@click.option("--json", "as_json", is_flag=True, help="Emit machine-readable output.")
+def manifest_import(path: Path, binding_id: str, dsn: str, as_json: bool) -> None:
+    """Store a validated manifest as UNAPPROVED pending publications.
+
+    The operator-CLI twin of linkedin-mcp's `import_manifest` tool, for when the
+    hosted server is not deployed (the first canary). Same records: the
+    publication id is derived from the payload digest and the key from the
+    binding, so importing identical bytes twice is a no-op and a changed payload
+    under an existing key is refused, never a second post. Nothing here can
+    approve: the next step is `approval record` over the printed digest.
+    """
+    try:
+        parsed = PublishManifest.from_json(path.read_bytes())
+    except Exception as exc:  # noqa: BLE001 - the CLI reports, it does not raise
+        click.echo(f"ABORT: invalid manifest {path}: {exc}", err=True)
+        sys.exit(1)
+    foreign = [entry.post_id for entry in parsed.publications if entry.binding_id != binding_id]
+    if foreign:
+        click.echo(f"ABORT: rows {foreign} do not name binding {binding_id}; nothing was stored.", err=True)
+        sys.exit(1)
+
+    async def _go() -> list[dict[str, str]]:
+        async with _binding_store(dsn) as bindings:
+            binding = await bindings.get(binding_id)
+        if binding is None:
+            click.echo(f"ABORT: no binding {binding_id} in the ledger; nothing was stored.", err=True)
+            sys.exit(1)
+        stored: list[dict[str, str]] = []
+        async with _publication_store(dsn) as store:
+            for entry in parsed.publications:
+                digest = entry.digest()
+                record = PublicationRecord(
+                    publication_id=f"pub_{digest[:24]}",
+                    key=PublicationKey(
+                        subject_kind=binding.subject_kind,
+                        subject_id=binding.subject_id,
+                        campaign_id=parsed.campaign_id,
+                        post_id=entry.post_id,
+                        account_id=binding.account_id,
+                    ),
+                    binding_id=binding.binding_id,
+                    payload_digest=digest,
+                    draft=entry.as_draft(),
+                    scheduled_at=entry.scheduled_utc(),
+                    expires_at=entry.expires_utc(),
+                )
+                try:
+                    saved = await store.upsert_publication(record)
+                except StoreConflict as exc:
+                    click.echo(f"ABORT: {entry.post_id}: {exc}", err=True)
+                    sys.exit(1)
+                stored.append(
+                    {
+                        "post_id": entry.post_id,
+                        "publication_id": saved.publication_id,
+                        "payload_digest": saved.payload_digest,
+                        "state": saved.state,
+                    }
+                )
+        return stored
+
+    stored = asyncio.run(_go())
+    if as_json:
+        click.echo(json.dumps({"campaign_id": parsed.campaign_id, "imported": stored, "approved": False}, indent=2))
+        return
+    click.echo(f"IMPORTED {len(stored)} publication(s) from {path}, campaign {parsed.campaign_id}")
+    for row in stored:
+        click.echo(f"  · {row['post_id']}  {row['publication_id']}  {row['state']}  digest {row['payload_digest']}")
+    click.echo("status   UNAPPROVED — approve each digest with `linkedin-publish approval record`")
 
 
 # ---------------------------------------------------------------------- account
