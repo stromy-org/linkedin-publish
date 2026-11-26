@@ -39,6 +39,7 @@ from .errors import (
     QuotaDeferred,
     ValidationFailure,
 )
+from .health import ObservationCache, ObservationCacheUnavailable, assess
 from .media import AssetReader
 from .models import AccountBinding, DeleteOutcome, PublishReceipt
 from .store import (
@@ -141,7 +142,9 @@ class PublicationService:
         asset_reader: AssetReader | None = None,
         lease: timedelta = DEFAULT_LEASE,
         actor: str = "scheduler",
+        observations: ObservationCache | None = None,
     ) -> None:
+        self._observations = observations
         self._store = store
         self._client = client
         self._credentials = credentials
@@ -384,6 +387,7 @@ class PublicationService:
             )
 
         self._client.check(binding, record.draft)
+        await self._require_credential_not_known_bad(binding, now)
 
         if binding.publish_enabled:
             return None
@@ -401,6 +405,28 @@ class PublicationService:
             "carries no valid commissioning grant",
             capability=record.draft.required_capability,
         )
+
+    async def _require_credential_not_known_bad(self, binding: AccountBinding, now: datetime) -> None:
+        """Known expired, revoked, wrong-app or wrong-member credentials block every write.
+
+        Reads only stored measurements — the binding's recorded expiry and, when
+        a cache is wired, the last observation of the binding's current
+        credential version. It makes no request. A missing or failed observation
+        is NOT treated as bad here: it is unknown, and the caller's own health
+        gate decides whether to probe first.
+        """
+        observation = None
+        if self._observations is not None:
+            try:
+                observation = await self._observations.get(binding.binding_id, binding.credential_version)
+            except ObservationCacheUnavailable:
+                observation = None
+        health = assess(binding, observation, now=now)
+        if health.blocks_writes:
+            raise CredentialExpired(
+                f"binding {binding.binding_id} credential is known bad ({health.reason}); "
+                "rotate or re-measure it before any write"
+            )
 
     # ------------------------------------------------------------- recovery
 

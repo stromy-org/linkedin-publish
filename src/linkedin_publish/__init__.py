@@ -31,6 +31,17 @@ from .errors import (
     TransientReadFailure,
     ValidationFailure,
 )
+from .health import (
+    EXPIRY_WARNING_WINDOW,
+    ExpiryWarning,
+    InMemoryObservationCache,
+    ObservationCache,
+    ObservationCacheUnavailable,
+    TokenHealth,
+    assess,
+    expiry_warning,
+    refresh_reason,
+)
 from .limits import BudgetStore, InMemoryBudgetStore, QuotaLimiter, QuotaProfile, profile_for
 from .manifest import ManifestEntry, PublishManifest, canonical_digest
 from .media import AssetReader, ResolvedAsset
@@ -63,7 +74,7 @@ from .store import (
     StoreConflict,
 )
 
-__version__ = "0.3.0"
+__version__ = "0.5.0"
 
 __all__ = [
     "fetch_share_statistics",
@@ -75,6 +86,15 @@ __all__ = [
     "DeleteOutcome",
     "AccountBinding",
     "Adapter",
+    "EXPIRY_WARNING_WINDOW",
+    "ExpiryWarning",
+    "InMemoryObservationCache",
+    "ObservationCache",
+    "ObservationCacheUnavailable",
+    "TokenHealth",
+    "assess",
+    "expiry_warning",
+    "refresh_reason",
     "ApprovalRecord",
     "ArticleDraft",
     "AssetReader",

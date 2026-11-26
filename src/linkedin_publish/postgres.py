@@ -30,8 +30,15 @@ from typing import TYPE_CHECKING, Any
 
 from ._json import loads_object
 from .auth import TokenObservation
-from .bindings import as_registration, conflict_message, registration_conflicts, require_observation_version
+from .bindings import (
+    as_registration,
+    conflict_message,
+    registration_conflicts,
+    require_observation_version,
+    rotated,
+)
 from .exceptions import DependencyError
+from .health import ObservationCacheUnavailable, sanitize
 from .limits import BudgetKey, QuotaExhausted
 from .models import AccountBinding
 from .store import (
@@ -51,6 +58,8 @@ __all__ = [
     "MIGRATIONS_DIR",
     "PostgresBindingStore",
     "PostgresBudgetStore",
+    "PostgresObservationCache",
+    "TOKEN_HEALTH_MIGRATION",
     "PostgresPublicationStore",
     "apply_migrations",
     "check_compatible",
@@ -61,6 +70,12 @@ MIGRATIONS_DIR = Path(__file__).parent / "migrations"
 
 #: Bumped when a migration lands. Runtime refuses to start below this.
 REQUIRED_MIGRATION = "0002_roles"
+
+#: The migration behind `account rotate` / `reenable` and the observation cache.
+#: Deliberately NOT the runtime minimum: a build carrying it must keep running
+#: (cache reported unavailable, i.e. `unknown`) against a ledger the operator has
+#: not migrated yet, because the runtime never migrates its own schema.
+TOKEN_HEALTH_MIGRATION = "0005_token_health"  # noqa: S105 - a migration name, not a secret
 
 #: One fixed key so concurrent `db migrate` invocations serialize rather than
 #: racing two DDL streams into the same schema.
@@ -423,6 +438,30 @@ class PostgresPublicationStore:
         return row is not None
 
 
+def _optional(row: Any, name: str, default: object = None) -> Any:
+    """A column added by a later migration; absent on a ledger not yet migrated."""
+    try:
+        return row[name]
+    except KeyError:
+        return default
+
+
+async def has_migration(pool: asyncpg.Pool, version: str) -> bool:
+    """Whether `version` is recorded as applied. Issues no DDL."""
+    row = await pool.fetchrow(
+        "SELECT 1 FROM linkedin_publish.schema_migrations WHERE version = $1", version
+    )
+    return row is not None
+
+
+async def _require_token_health(pool: asyncpg.Pool) -> None:
+    if not await has_migration(pool, TOKEN_HEALTH_MIGRATION):
+        raise StoreConflict(
+            f"the ledger lacks migration {TOKEN_HEALTH_MIGRATION}; run `linkedin-publish db migrate` "
+            "under the migration identity first"
+        )
+
+
 def _as_binding(row: Any) -> AccountBinding:
     capabilities = row["capabilities"]
     if isinstance(capabilities, (str, bytes)):
@@ -446,6 +485,9 @@ def _as_binding(row: Any) -> AccountBinding:
             "token_observed_at": row["token_observed_at"],
             "capabilities": capabilities,
             "publish_enabled": row["publish_enabled"],
+            "rotated_at": _optional(row, "rotated_at"),
+            "rotated_from_version": _optional(row, "rotated_from_version"),
+            "reenable_after_measure": bool(_optional(row, "reenable_after_measure", False)),
         }
     )
 
@@ -455,6 +497,10 @@ class PostgresBindingStore:
 
     def __init__(self, pool: asyncpg.Pool) -> None:
         self._pool = pool
+
+    @property
+    def observations(self) -> PostgresObservationCache:
+        return PostgresObservationCache(self._pool)
 
     async def register(self, binding: AccountBinding) -> bool:
         stored = as_registration(binding)
@@ -520,6 +566,150 @@ class PostgresBindingStore:
             raise StoreConflict(f"binding {binding_id!r} is not registered")
         require_observation_version(existing, observation)
         raise StoreConflict(f"binding {binding_id!r} was not updated")  # pragma: no cover
+
+    async def rotate(
+        self,
+        binding_id: str,
+        *,
+        expected_version: str,
+        credential_ref: str,
+        credential_version: str,
+        at: datetime,
+    ) -> AccountBinding:
+        await _require_token_health(self._pool)
+        existing = await self.get(binding_id)
+        if existing is None:
+            raise StoreConflict(f"binding {binding_id!r} is not registered")
+        target = rotated(
+            existing,
+            expected_version=expected_version,
+            credential_ref=credential_ref,
+            credential_version=credential_version,
+            at=at,
+        )
+        # Compare-and-set on the version being replaced: two rotations racing
+        # from the same version cannot both land, and the loser is told so.
+        row = await self._pool.fetchrow(
+            """
+            UPDATE linkedin_publish.account_bindings
+               SET credential_ref = $3, credential_version = $4,
+                   observed_scopes = '{}', token_expires_at = NULL, token_observed_at = NULL,
+                   publish_enabled = false, rotated_at = $5, rotated_from_version = $2,
+                   reenable_after_measure = $6, updated_at = now()
+             WHERE binding_id = $1 AND credential_version = $2
+            RETURNING *
+            """,
+            binding_id,
+            expected_version,
+            target.credential_ref,
+            target.credential_version,
+            at,
+            target.reenable_after_measure,
+        )
+        if row is None:
+            raise StoreConflict(f"binding {binding_id!r} changed during rotation; re-read it and retry")
+        return _as_binding(row)
+
+    async def reenable(self, binding_id: str, *, expected_version: str) -> AccountBinding:
+        await _require_token_health(self._pool)
+        row = await self._pool.fetchrow(
+            """
+            UPDATE linkedin_publish.account_bindings
+               SET publish_enabled = true, reenable_after_measure = false, updated_at = now()
+             WHERE binding_id = $1 AND credential_version = $2 AND reenable_after_measure
+            RETURNING *
+            """,
+            binding_id,
+            expected_version,
+        )
+        if row is None:
+            raise StoreConflict(f"binding {binding_id!r} changed since it was checked; re-run the check")
+        return _as_binding(row)
+
+
+class PostgresObservationCache:
+    """`ObservationCache` over `linkedin_publish.token_observations` (migration 0005).
+
+    The runtime may read and write it — the scheduled health path refreshes it
+    daily — but it holds measurements only, never a credential. A ledger without
+    the table raises `ObservationCacheUnavailable`, which callers report as
+    `unknown`, never as a missing token.
+    """
+
+    def __init__(self, pool: asyncpg.Pool) -> None:
+        self._pool = pool
+
+    async def _run(self, method: str, query: str, *args: object) -> Any:
+        asyncpg = require_asyncpg()
+        try:
+            return await getattr(self._pool, method)(query, *args)
+        except (asyncpg.exceptions.UndefinedTableError, asyncpg.exceptions.InsufficientPrivilegeError) as exc:
+            raise ObservationCacheUnavailable(
+                f"token_observations is unavailable ({type(exc).__name__}); "
+                f"apply migration {TOKEN_HEALTH_MIGRATION}"
+            ) from exc
+
+    async def get(self, binding_id: str, credential_version: str) -> TokenObservation | None:
+        row = await self._run(
+            "fetchrow",
+            "SELECT * FROM linkedin_publish.token_observations WHERE binding_id = $1 AND credential_version = $2",
+            binding_id,
+            credential_version,
+        )
+        if row is None:
+            return None
+        return TokenObservation(
+            observed_at=row["observed_at"],
+            credential_version=row["credential_version"],
+            token_active=row["token_active"],
+            scopes_ok=row["scopes_ok"],
+            identity_verified=row["identity_verified"],
+            observed_scopes=tuple(row["observed_scopes"] or ()),
+            expires_at=row["expires_at"],
+            app_id=row["app_id"],
+            member_sub=row["member_sub"],
+            reason=row["reason"],
+        )
+
+    async def put(self, binding_id: str, observation: TokenObservation) -> None:
+        clean = sanitize(observation)
+        # Monotonic: an older probe arriving late never replaces a newer one.
+        await self._run(
+            "execute",
+            """
+            INSERT INTO linkedin_publish.token_observations (
+                binding_id, credential_version, observed_at, token_active, scopes_ok,
+                identity_verified, observed_scopes, expires_at, app_id, member_sub, reason
+            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+            ON CONFLICT (binding_id, credential_version) DO UPDATE SET
+                observed_at = EXCLUDED.observed_at, token_active = EXCLUDED.token_active,
+                scopes_ok = EXCLUDED.scopes_ok, identity_verified = EXCLUDED.identity_verified,
+                observed_scopes = EXCLUDED.observed_scopes, expires_at = EXCLUDED.expires_at,
+                app_id = EXCLUDED.app_id, member_sub = EXCLUDED.member_sub, reason = EXCLUDED.reason
+             WHERE linkedin_publish.token_observations.observed_at <= EXCLUDED.observed_at
+            """,
+            binding_id,
+            clean.credential_version,
+            clean.observed_at,
+            clean.token_active,
+            clean.scopes_ok,
+            clean.identity_verified,
+            list(clean.observed_scopes),
+            clean.expires_at,
+            clean.app_id,
+            clean.member_sub,
+            clean.reason,
+        )
+
+    async def invalidate(self, binding_id: str) -> int:
+        status = await self._run(
+            "execute", "DELETE FROM linkedin_publish.token_observations WHERE binding_id = $1", binding_id
+        )
+        # asyncpg returns the command tag, e.g. "DELETE 2".
+        try:
+            return int(str(status).rsplit(" ", 1)[-1])
+        except ValueError:  # pragma: no cover - a tag asyncpg does not emit
+            return 0
 
 
 class PostgresBudgetStore:
