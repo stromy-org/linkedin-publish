@@ -18,9 +18,11 @@ Two layers, usable independently:
 from .analytics import Granularity, build_query, fetch_share_statistics
 from .auth import CredentialProvider, Credentials, StaticCredentialProvider, TokenObservation
 from .client import LinkedInClient, PreparedPost
+from .cma import CMA_ORGANIZATION_SWITCH
 from .errors import (
     AuthorForbidden,
     CapabilityUnavailable,
+    CmaOrganizationDisabled,
     CredentialExpired,
     CredentialMissing,
     FailureCode,
@@ -74,7 +76,7 @@ from .store import (
     StoreConflict,
 )
 
-__version__ = "0.6.0"
+__version__ = "0.7.0"
 
 __all__ = [
     "fetch_share_statistics",
@@ -104,6 +106,8 @@ __all__ = [
     "Capability",
     "CapabilityStatus",
     "CapabilityUnavailable",
+    "CMA_ORGANIZATION_SWITCH",
+    "CmaOrganizationDisabled",
     "CommissioningGrant",
     "CredentialExpired",
     "CredentialMissing",

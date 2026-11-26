@@ -17,6 +17,10 @@ Three rules that are easy to get wrong and expensive to get wrong:
 This capability needs `rw_organization_admin` *and* an ADMINISTRATOR role on the
 organization. Post-write scope proves nothing about it, which is why it is gated
 on its own commissioning evidence rather than on a successful publish.
+
+It is also a CMA organization capability, and ships **disabled**:
+`fetch_share_statistics` refuses with `CmaOrganizationDisabled` before any
+request unless called with `cma_organization_enabled=True` (see `cma.py`).
 """
 
 from __future__ import annotations
@@ -28,6 +32,7 @@ import httpx
 
 from ._http import map_read_failure, response_object
 from ._json import as_object
+from .cma import require_cma_organization
 from .errors import ValidationFailure
 from .models import ShareStatistics, ShareStatisticsPoint
 from .urns import validate_urn
@@ -150,8 +155,13 @@ async def fetch_share_statistics(
     api_base: str = API_BASE,
     linkedin_version: str = LINKEDIN_VERSION,
     now: datetime | None = None,
+    cma_organization_enabled: bool = False,
 ) -> ShareStatistics:
-    """Read organic share statistics for one organization over a bounded window."""
+    """Read organic share statistics for one organization over a bounded window.
+
+    Refuses before any request unless `cma_organization_enabled` is True.
+    """
+    require_cma_organization(cma_organization_enabled, capability="share_statistics", what="share statistics")
     params = build_query(
         organization_urn, start=start, end=end, granularity=granularity, now=now
     )

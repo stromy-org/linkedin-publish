@@ -16,6 +16,13 @@ Order of operations is load-bearing and is the same on every call:
 5. Reserve quota, then upload, then reserve again, then create.
 
 A dry run stops after step 4 and has made no request of any kind.
+
+Before step 2, a build-level gate: **CMA organization capabilities ship
+disabled.** A draft authored as `urn:li:organization:*` (any shape, documents
+included) and `share_statistics` refuse with `CmaOrganizationDisabled` unless
+the client is built with `cma_organization_enabled=True` (see `cma.py`). The
+switch is passed down to both adapters and to `fetch_share_statistics`, so each
+of them refuses on its own as well. A person-authored post never consults it.
 """
 
 from __future__ import annotations
@@ -29,6 +36,7 @@ from .adapters import PostAdapter, RestPostsAdapter, ShareUgcAdapter
 from .adapters.base import PublishOutcome
 from .analytics import Granularity, fetch_share_statistics
 from .auth import Credentials
+from .cma import require_cma_organization, require_for_author
 from .errors import AuthorForbidden, CapabilityUnavailable, QuotaDeferred, ValidationFailure
 from .limits import Endpoint, QuotaLimiter
 from .media import AssetReader, ResolvedAsset, media_kind, sniff_and_validate
@@ -91,6 +99,7 @@ class LinkedInClient:
         api_base: str = API_BASE,
         linkedin_version: str = LINKEDIN_VERSION,
         limiter: QuotaLimiter | None = None,
+        cma_organization_enabled: bool = False,
     ) -> None:
         self._owns_http = http is None
         self._http = http or httpx.AsyncClient(
@@ -101,8 +110,16 @@ class LinkedInClient:
         self._limiter = limiter
         self._api_base = api_base
         self._linkedin_version = linkedin_version
-        self._ugc = ShareUgcAdapter(self._http, api_base=api_base)
-        self._rest = RestPostsAdapter(self._http, api_base=api_base, linkedin_version=linkedin_version)
+        self._cma_organization_enabled = cma_organization_enabled
+        self._ugc = ShareUgcAdapter(
+            self._http, api_base=api_base, cma_organization_enabled=cma_organization_enabled
+        )
+        self._rest = RestPostsAdapter(
+            self._http,
+            api_base=api_base,
+            linkedin_version=linkedin_version,
+            cma_organization_enabled=cma_organization_enabled,
+        )
 
     async def __aenter__(self) -> LinkedInClient:
         return self
@@ -118,6 +135,11 @@ class LinkedInClient:
     @property
     def http(self) -> httpx.AsyncClient:
         return self._http
+
+    @property
+    def cma_organization_enabled(self) -> bool:
+        """Whether this build may act as an organization. False unless set explicitly."""
+        return self._cma_organization_enabled
 
     def adapter_for(self, binding: AccountBinding) -> PostAdapter:
         """The adapter this binding is configured for. Never inferred."""
@@ -140,7 +162,16 @@ class LinkedInClient:
         that capability only — never an `unavailable` one, and never another
         capability. Only `PublicationService` passes it, after matching the grant
         to the publication, digest, binding, capability and commissioning actor.
+
+        An organization author is refused first, whatever the binding says,
+        unless this client was built with `cma_organization_enabled=True`.
         """
+        require_for_author(
+            self._cma_organization_enabled,
+            draft.author_urn,
+            capability=draft.required_capability,
+            what="organization publishing",
+        )
         if not binding.may_author(draft.author_urn):
             raise AuthorForbidden(
                 f"binding {binding.binding_id} is not authorized to publish as {draft.author_urn}"
@@ -296,7 +327,13 @@ class LinkedInClient:
         which a successful publish demonstrates, hence its own capability. The
         organization must also be in the binding's allowlist: a CMA token that
         happens to reach another Page is not authorization to report on it.
+
+        Disabled by default: refuses before any binding state is read unless this
+        client was built with `cma_organization_enabled=True`.
         """
+        require_cma_organization(
+            self._cma_organization_enabled, capability="share_statistics", what="share statistics"
+        )
         self._require_capability(binding, "share_statistics")
         if organization_urn not in binding.allowed_organization_urns:
             raise AuthorForbidden(
@@ -319,6 +356,7 @@ class LinkedInClient:
             api_base=self._api_base,
             linkedin_version=self._linkedin_version,
             now=now,
+            cma_organization_enabled=self._cma_organization_enabled,
         )
 
     def _require_capability(self, binding: AccountBinding, capability: Capability) -> None:

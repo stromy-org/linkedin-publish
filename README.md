@@ -60,9 +60,33 @@ result = await service.publish_due(binding, campaign_id="...", dry_run=True)
 | `store` | The ledger: records, protocol, in-memory implementation |
 | `service` | Claim → gates → durable `sending` → HTTP → receipt |
 | `limits` | Request budgets and retry policy |
-| `analytics` | Organization share statistics (CMA-gated, bounded windows) |
+| `analytics` | Organization share statistics (CMA-gated, bounded windows; disabled by default) |
+| `cma` | The one switch, `cma_organization_enabled`, for every CMA organization capability |
 | `manifest` | Publish manifest v1 and the canonical digest |
 | `postgres` | The durable store, budgets and migrations (`postgres` extra) |
+
+## CMA organization capabilities: shipped disabled
+
+Three capabilities act as a LinkedIn organization, so they need the Community
+Management API product, which no app here has yet:
+
+| Capability | Endpoints (versioned REST, `LinkedIn-Version` from `version.py`) | Scope and role |
+|---|---|---|
+| Organization publishing: a post authored as `urn:li:organization:*` (text, article, image) | `POST /rest/posts` (and `/v2/ugcPosts` on the Share product) | `w_organization_social`; ADMINISTRATOR, DIRECT_SPONSORED_CONTENT_POSTER or CONTENT_ADMIN |
+| Organization documents | `POST /rest/documents?action=initializeUpload` (owner = the organization), `PUT` to the pre-signed URL, then `POST /rest/posts` with `content.media` | the same |
+| Organization share statistics | `GET /rest/organizationalEntityShareStatistics?q=organizationalEntity` | `rw_organization_admin`; ADMINISTRATOR |
+
+The adapters and their wire shapes exist and have fixture tests
+(`tests/contract/test_cma_switch.py`). **Every one refuses by default** with
+`CmaOrganizationDisabled` (code `capability_unavailable`, `switch:
+cma_organization_enabled`), before any request and before any binding state is
+read. There is one switch: `LinkedInClient(cma_organization_enabled=True)`,
+which the client passes down to both adapters and to `fetch_share_statistics`
+(each also takes the keyword and refuses on its own). The switch is necessary,
+never sufficient. The binding must still list the organization in
+`allowed_organization_urns` and carry commissioned evidence for the capability.
+A person-authored post never consults the switch. Turn it on only in a
+deployment whose app has the CMA product approved.
 
 ## Design rules worth knowing before editing
 
