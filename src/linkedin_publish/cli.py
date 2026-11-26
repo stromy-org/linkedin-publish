@@ -18,6 +18,15 @@ negotiable:
 argument: registration stores a reference and a version, and inspection reads
 the secret from the environment. Registration enables nothing.
 
+Renewal is `account rotate` → `account inspect --record` → `account reenable`.
+Rotation moves the binding to the new secret version and DISABLES it in the same
+write; `reenable` restores publishing only for a binding that was enabled before
+the rotation, and only once the new version has been measured healthy. The
+publication ledger is never touched: published and unknown records stay what
+they are, and pending approved records go out only after the re-enable.
+`account status` reads the stored measurement and the expiry warning without a
+credential and without a network call.
+
 `manifest validate` is fully offline: no credential is read, no network touched,
 no database opened. That is the command to reach for when checking a manifest.
 """
@@ -41,8 +50,9 @@ import httpx
 
 from . import __version__
 from .auth import Credentials, TokenObservation, inspect_credentials, member_sub_from_author
-from .bindings import IDENTITY_FIELDS, BindingStore
+from .bindings import IDENTITY_FIELDS, BindingStore, reenable_problems
 from .client import default_limits, default_timeout
+from .health import ObservationCacheUnavailable, assess, expiry_warning
 from .manifest import PublishManifest
 from .models import AccountBinding
 from .store import ApprovalRecord, CommissioningGrant, PublicationRecord, PublicationStore, StoreConflict
@@ -467,8 +477,16 @@ def account_inspect(
         if record and binding and dsn:
             async with _binding_store(dsn) as store:
                 binding = await store.record_observation(binding.binding_id, observation)
+                # A forced refresh: registration, rotation and renewal all end here,
+                # so the health cache holds this probe, keyed by its own version.
+                try:
+                    await store.observations.put(binding.binding_id, observation)
+                    cache_note.append("cached")
+                except ObservationCacheUnavailable as exc:
+                    cache_note.append(f"not cached: {exc}")
         return observation, binding
 
+    cache_note: list[str] = []
     try:
         observation, binding = asyncio.run(_inspect())
     except StoreConflict as exc:
@@ -495,7 +513,11 @@ def account_inspect(
         "observed_at": observation.observed_at.isoformat(),
         "reason": observation.reason,
         "recorded": bool(record and binding),
+        "health_cache": cache_note[0] if cache_note else None,
     }
+    if binding is not None:
+        warning = expiry_warning(binding, observation, now=observation.observed_at)
+        report["expiry_warning"] = warning.as_dict() if warning else None
 
     if as_json:
         click.echo(json.dumps(report, indent=2))
@@ -518,7 +540,204 @@ def account_inspect(
             click.echo(f"  reason           {observation.reason}")
         if record and binding:
             click.echo("  recorded         scopes + expiry stored on the binding")
+            if cache_note:
+                click.echo(f"  health cache     {cache_note[0]}")
+        if report.get("expiry_warning"):
+            click.echo(f"  WARNING          {report['expiry_warning']['code']} — re-mint, then `account rotate`")
     sys.exit({"HEALTHY": 0, "PROBED": 0, "BAD": 1}.get(verdict, 2))
+
+
+@account.command("rotate")
+@click.option("--binding", "binding_id", required=True, help="The binding whose credential is being renewed.")
+@click.option(
+    "--credential-ref",
+    required=True,
+    help="Where the NEW secret lives (e.g. a Key Vault secret name). Never the value.",
+)
+@click.option("--credential-version", required=True, help="The new secret version the reference points at.")
+@click.option(
+    "--from-version",
+    "expected_version",
+    default=None,
+    help="The version being replaced. Defaults to the binding's current one; pass it to refuse a stale view.",
+)
+@click.option("--dsn", envvar="LINKEDIN_PUBLISH_DSN", required=True, help="Writer-role DSN.")
+@click.option("--dry-run", is_flag=True, help="Show the change and write nothing.")
+def account_rotate(
+    binding_id: str,
+    credential_ref: str,
+    credential_version: str,
+    expected_version: str | None,
+    dsn: str,
+    dry_run: bool,
+) -> None:
+    """Move a binding to a new credential version, and DISABLE it until re-measured.
+
+    The same app, member and adapter: approvals and the publication ledger carry
+    over, and nothing already published or unknown is reset. The stored
+    measurement and the health cache are cleared, so nothing reports the new
+    secret healthy on the old one's probe. Then run `account inspect --binding
+    <id> --record` with the new secret in the environment, and `account
+    reenable` to restore publishing if the rotation turned it off.
+    """
+    _refuse_secret_shaped(credential_ref)
+
+    async def _load() -> AccountBinding | None:
+        async with _binding_store(dsn) as store:
+            return await store.get(binding_id)
+
+    current = asyncio.run(_load())
+    if current is None:
+        click.echo(f"ABORT: binding {binding_id!r} is not registered.", err=True)
+        sys.exit(1)
+    replacing = expected_version or current.credential_version
+
+    click.echo("Credential rotation — the binding is DISABLED until the new secret is measured.")
+    click.echo(f"  binding                   {current.binding_id}")
+    click.echo(f"  credential_ref            {current.credential_ref}  ->  {credential_ref}")
+    click.echo(f"  credential_version        {replacing}  ->  {credential_version}")
+    click.echo(f"  publish_enabled           {current.publish_enabled}  ->  False")
+    click.echo(
+        "  re-enable after measure   "
+        f"{'yes' if current.publish_enabled or current.reenable_after_measure else 'no (it was not enabled)'}"
+    )
+    if dry_run:
+        click.echo("dry run — nothing written")
+        return
+    click.confirm("Rotate this binding's credential?", abort=True)
+
+    async def _rotate() -> tuple[AccountBinding, str]:
+        async with _binding_store(dsn) as store:
+            moved = await store.rotate(
+                binding_id,
+                expected_version=replacing,
+                credential_ref=credential_ref,
+                credential_version=credential_version,
+                at=datetime.now(timezone.utc),
+            )
+            try:
+                dropped = await store.observations.invalidate(binding_id)
+                note = f"health cache invalidated ({dropped} observation(s) dropped)"
+            except ObservationCacheUnavailable as exc:
+                note = f"health cache not invalidated: {exc}"
+        return moved, note
+
+    try:
+        moved, note = asyncio.run(_rotate())
+    except StoreConflict as exc:
+        click.echo(f"CONFLICT  {exc}", err=True)
+        sys.exit(1)
+    click.echo(f"rotated  {moved.binding_id}  now {moved.credential_version}, publishing DISABLED")
+    click.echo(f"  {note}")
+    click.echo(
+        f"next: with the new secret in the environment, `account inspect --binding {moved.binding_id} --record`"
+        + (f", then `account reenable --binding {moved.binding_id}`" if moved.reenable_after_measure else "")
+    )
+
+
+@account.command("reenable")
+@click.option("--binding", "binding_id", required=True)
+@click.option("--dsn", envvar="LINKEDIN_PUBLISH_DSN", required=True, help="Writer-role DSN.")
+def account_reenable(binding_id: str, dsn: str) -> None:
+    """Restore publishing on a rotated binding, after a healthy re-measure.
+
+    Refuses unless the binding was enabled before its rotation, the current
+    credential version was measured after the rotation, and that measurement is
+    healthy with the declared scopes and a future expiry. This is not the
+    canary's first enablement, and it cannot become one.
+    """
+
+    async def _check() -> tuple[AccountBinding | None, list[str]]:
+        async with _binding_store(dsn) as store:
+            binding = await store.get(binding_id)
+            if binding is None:
+                return None, []
+            try:
+                observation = await store.observations.get(binding_id, binding.credential_version)
+            except ObservationCacheUnavailable:
+                observation = None
+        return binding, reenable_problems(binding, observation, now=datetime.now(timezone.utc))
+
+    binding, problems = asyncio.run(_check())
+    if binding is None:
+        click.echo(f"ABORT: binding {binding_id!r} is not registered.", err=True)
+        sys.exit(1)
+    if problems:
+        click.echo(f"REFUSED  {binding_id} stays disabled:", err=True)
+        for problem in problems:
+            click.echo(f"  - {problem}", err=True)
+        sys.exit(1)
+
+    click.echo(f"Re-enable publishing on {binding_id} (credential {binding.credential_version}).")
+    click.echo("Pending approved publications that are due will be sent by the next live tick.")
+    click.confirm("Re-enable?", abort=True)
+
+    async def _enable() -> AccountBinding:
+        async with _binding_store(dsn) as store:
+            return await store.reenable(binding_id, expected_version=binding.credential_version)
+
+    try:
+        asyncio.run(_enable())
+    except StoreConflict as exc:
+        click.echo(f"CONFLICT  {exc}", err=True)
+        sys.exit(1)
+    click.echo(f"re-enabled  {binding_id}")
+
+
+@account.command("status")
+@click.option("--binding", "binding_id", required=True)
+@click.option("--dsn", envvar="LINKEDIN_PUBLISH_DSN", required=True, help="A DSN that can read the binding.")
+@click.option("--json", "as_json", is_flag=True, help="Emit machine-readable output.")
+def account_status(binding_id: str, dsn: str, as_json: bool) -> None:
+    """The stored token health of a binding: no credential read, no request made.
+
+    Reports the last measured expiry, the cached observation for the current
+    credential version, the verdict over them and the <=14-day expiry warning.
+    Exit 0 healthy, 1 blocked (known bad or expired), 2 unknown.
+    """
+
+    async def _read() -> tuple[AccountBinding | None, object, str | None]:
+        async with _binding_store(dsn) as store:
+            binding = await store.get(binding_id)
+            if binding is None:
+                return None, None, None
+            try:
+                return binding, await store.observations.get(binding_id, binding.credential_version), None
+            except ObservationCacheUnavailable as exc:
+                return binding, None, str(exc)
+
+    binding, observation, cache_problem = asyncio.run(_read())
+    if binding is None:
+        click.echo(f"ABORT: binding {binding_id!r} is not registered.", err=True)
+        sys.exit(1)
+    now = datetime.now(timezone.utc)
+    health = assess(binding, observation, now=now)  # type: ignore[arg-type] - narrowed above
+    report: dict[str, object] = {
+        "binding_id": binding.binding_id,
+        "credential_version": binding.credential_version,
+        "publish_enabled": binding.publish_enabled,
+        "token_expires_at": binding.token_expires_at.isoformat() if binding.token_expires_at else None,
+        "token_observed_at": binding.token_observed_at.isoformat() if binding.token_observed_at else None,
+        "rotated_at": binding.rotated_at.isoformat() if binding.rotated_at else None,
+        "reenable_after_measure": binding.reenable_after_measure,
+        "health": health.as_dict(),
+        "health_cache": cache_problem or ("hit" if observation is not None else "miss"),
+        "checked_at": now.isoformat(),
+    }
+    if as_json:
+        click.echo(json.dumps(report, indent=2))
+    else:
+        click.echo(f"{health.status.upper():<9}{binding.binding_id}  ({health.reason or 'measured healthy'})")
+        click.echo(f"  credential       {binding.credential_version}   publish_enabled {binding.publish_enabled}")
+        click.echo(f"  measured expiry  {report['token_expires_at'] or '—'}")
+        click.echo(f"  last measured    {report['token_observed_at'] or '—'}")
+        click.echo(f"  health cache     {report['health_cache']}")
+        if health.expiry_warning is not None:
+            warning = health.expiry_warning
+            click.echo(
+                f"  WARNING          {warning.code}: {warning.days_remaining} days (window {warning.window_days})"
+            )
+    sys.exit({"healthy": 0, "blocked": 1}.get(health.status, 2))
 
 
 @account.command("commission")

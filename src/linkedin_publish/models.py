@@ -239,6 +239,14 @@ class AccountBinding(_Strict):
     token_observed_at: datetime | None = None
     capabilities: tuple[CapabilityStatus, ...] = ()
     publish_enabled: bool = False
+    #: Set by `account rotate`: when the credential last moved, and from which
+    #: version. A rotation clears the stored observation and disables publishing.
+    rotated_at: datetime | None = None
+    rotated_from_version: str | None = None
+    #: True when the binding was enabled before a rotation disabled it. Only then
+    #: may `account reenable` restore it, after a healthy re-measure — so a
+    #: rotation can never enable a binding that the canary path never enabled.
+    reenable_after_measure: bool = False
 
     @field_validator("author_urn")
     @classmethod

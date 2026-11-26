@@ -120,6 +120,42 @@ adapter under an existing id is refused: that is a new binding with fresh
 approvals, not an edit. For the CMA app, which has no OIDC product, pass
 `--no-identity`; its identity then stays unproven, which keeps it unactivatable.
 
+### Renewal (token rotation)
+
+A member token lives about 60 days. A re-minted token keeps its binding, its
+approvals and its ledger; only the credential version moves. Needs migration
+`0005_token_health` (`db migrate`).
+
+```bash
+# 1. Move the binding to the new secret version. DISABLES publishing in the same
+#    write and clears the stored measurement and the health cache.
+uv run linkedin-publish account rotate --binding <id> \
+  --credential-ref <where the new secret lives> --credential-version <new version> --dsn "$WRITER_DSN"
+
+# 2. With the NEW secret in the environment, measure and record it.
+uv run linkedin-publish account inspect --binding <id> --dsn "$WRITER_DSN" --record
+
+# 3. Restore publishing — refused unless the binding was enabled before the
+#    rotation and step 2 measured the new version healthy after it.
+uv run linkedin-publish account reenable --binding <id> --dsn "$WRITER_DSN"
+
+# Any time, no credential and no request: stored expiry, verdict, <=14-day warning.
+uv run linkedin-publish account status --binding <id> --dsn "$READER_DSN"
+```
+
+Published and `unknown` publications are never reset by a rotation; pending
+approved ones go out only after the re-enable. `reenable` is not the canary's
+first enablement and cannot become one.
+
+**Token health** (`linkedin_publish.health`): `assess` turns the last observation
+into `healthy`, `blocked` (expired, inactive/revoked, wrong app, wrong member,
+missing scope, version mismatch — these block every write, including in
+`PublicationService`) or `unknown` (a failed probe or no measurement — never read
+as "no token"). `expiry_warning` fires inside 14 days of the **measured** expiry,
+never `now + 60 days`. `refresh_reason` says when a probe is owed (missing,
+daily, or before a due batch). Observations are cached per
+`(binding_id, credential_version)` in `token_observations`.
+
 ## Tests
 
 ```bash

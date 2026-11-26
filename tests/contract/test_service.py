@@ -717,3 +717,71 @@ async def test_an_exhausted_quota_defers_before_the_network() -> None:
         await service.publish_one("pub-1", binding(), expected_digest=DIGEST, now=NOW)
     assert log.count == 0
     await client.aclose()
+
+
+# ------------------------------------------------- token health (C4) -------
+
+
+async def test_a_measured_expiry_in_the_past_blocks_the_send_with_zero_requests() -> None:
+    from linkedin_publish.errors import CredentialExpired
+
+    store, client, log, service, bound = await seeded()
+    expired = bound.model_copy(update={"token_expires_at": NOW - timedelta(minutes=1)})
+    with pytest.raises(CredentialExpired):
+        await service.publish_one("pub-1", expired, expected_digest=DIGEST, now=NOW)
+    assert log.count == 0
+    stored = await store.get_publication("pub-1")
+    assert stored is not None and stored.state == "pending"  # safe: released, not burned
+    await client.aclose()
+
+
+async def test_a_cached_known_bad_observation_blocks_every_write() -> None:
+    from linkedin_publish import Credentials, InMemoryObservationCache, TokenObservation
+
+    store = InMemoryPublicationStore()
+    await store.upsert_publication(record())
+    await store.put_approval(approval())
+    cache = InMemoryObservationCache()
+    await cache.put(
+        "bind-1",
+        TokenObservation(observed_at=NOW, credential_version="v1", token_active=False, reason="introspection_inactive"),
+    )
+    client, log = make_client(created)
+    service = PublicationService(
+        store,
+        client,
+        StaticCredentialProvider(Credentials(access_token="t", client_id="app-personal", client_secret="s")),
+        observations=cache,
+    )
+    result = await service.publish_due(binding(), campaign_id="camp-1", now=NOW, dry_run=False)
+    assert log.count == 0
+    assert result.published == 0 and result.failed == 1
+    assert result.failures[0]["code"] == "credential_expired"
+    await client.aclose()
+
+
+async def test_rotation_never_resets_published_or_unknown_rows() -> None:
+    """Rotate, re-measure, re-enable: only the safe pending row goes out, once."""
+    from linkedin_publish.bindings import rotated
+
+    rows = [
+        record(publication_id="pub-done", post_id="p-done", state="published", digest="1" * 64),
+        record(publication_id="pub-unk", post_id="p-unk", state="unknown", digest="2" * 64),
+        record(publication_id="pub-1"),
+    ]
+    store, client, log, service, bound = await seeded(records=rows)
+
+    moved = rotated(bound, expected_version="v1", credential_ref="r", credential_version="v2", at=NOW)
+    disabled = await service.publish_due(moved, campaign_id="camp-1", now=NOW, dry_run=False)
+    assert log.count == 0  # disabled by the rotation: nothing leaves
+    assert disabled.published == 0
+
+    reenabled = moved.model_copy(
+        update={"publish_enabled": True, "reenable_after_measure": False, "token_expires_at": NOW + timedelta(days=59)}
+    )
+    sent = await service.publish_due(reenabled, campaign_id="camp-1", now=NOW, dry_run=False)
+    assert sent.published == 1
+    assert log.count == 1
+    states = {pid: (await store.get_publication(pid)).state for pid in ("pub-done", "pub-unk", "pub-1")}  # type: ignore[union-attr]
+    assert states == {"pub-done": "published", "pub-unk": "unknown", "pub-1": "published"}
+    await client.aclose()
