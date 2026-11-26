@@ -80,9 +80,20 @@ ALTER TABLE account_bindings ADD CONSTRAINT account_bindings_platform_identity C
         AND native_account_id ~ '^[0-9]{1,32}$')
 );
 
--- The target of the publications -> bindings platform tie.
-ALTER TABLE account_bindings DROP CONSTRAINT IF EXISTS account_bindings_id_platform;
-ALTER TABLE account_bindings ADD CONSTRAINT account_bindings_id_platform UNIQUE (binding_id, platform);
+-- The target of the publications -> bindings platform tie. Added once: the
+-- foreign key below depends on it, so a re-run must not drop it.
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+         WHERE conrelid = 'linkedin_publish.account_bindings'::regclass
+           AND conname = 'account_bindings_id_platform'
+    ) THEN
+        ALTER TABLE linkedin_publish.account_bindings
+            ADD CONSTRAINT account_bindings_id_platform UNIQUE (binding_id, platform);
+    END IF;
+END
+$$;
 
 -- --------------------------------------------------------- publications ---
 
