@@ -53,7 +53,16 @@ from .approval import (
 )
 from .bindings import InMemorySocialBindingStore, SocialBindingStore
 from .canonical import canonical_digest, canonical_json
-from .commissioning import GRANT_TTL, commission_problems, enable_problems, enabled_binding, new_grant
+from .commissioning import (
+    GRANT_TTL,
+    commission_problems,
+    enable_problems,
+    enabled_binding,
+    new_grant,
+    reenable_problems,
+    registration_problems,
+    rotated_binding,
+)
 from .dispatch import DispatchService, PolicyGate, SocialTick
 from .errors import (
     ApprovalRefused,
@@ -85,10 +94,11 @@ from .model import (
     SocialRecord,
     meta_payload_digest,
 )
+from .rights import normalize_rights_evidence, require_rights, rights_evidence_of, rights_problems
 from .states import NEVER_FRESH, TRANSITIONS, SocialState
 from .tokens import MetaTokenEvidence, inspect_meta_token, meta_token_status, parse_debug_token
 
-__version__ = "0.9.0"
+__version__ = "0.10.0"
 
 __all__ = [
     "C3_HANDOVER_VERSION",
@@ -149,6 +159,13 @@ __all__ = [
     "meta_payload_digest",
     "meta_token_status",
     "new_grant",
+    "normalize_rights_evidence",
     "parse_debug_token",
+    "reenable_problems",
+    "registration_problems",
+    "require_rights",
+    "rights_evidence_of",
+    "rights_problems",
+    "rotated_binding",
     "verify_record",
 ]

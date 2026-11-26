@@ -7,6 +7,11 @@ Every write here needs the writer role there; the runtime may only read.
   measured expiry, or explicit no-expiry evidence — only for the binding's
   current credential version. A reading of another version measured another
   secret and is refused.
+* `register` creates a DISABLED binding, every capability unknown (a duplicate
+  id is a no-op). `rotate` moves a binding to a new credential version, clears
+  its measurement, turns publishing off and sets the hold; `reenable` clears the
+  hold only after a fresh healthy measurement of the new version
+  (`social_publish.commissioning.reenable_problems`), re-checked by the store.
 * `enable_capability` is the first enablement of one (operation, format) from
   its canary receipt (`social_publish.commissioning.enabled_binding`).
 """
@@ -17,7 +22,7 @@ import asyncio
 from datetime import datetime
 from typing import Protocol, runtime_checkable
 
-from .commissioning import enabled_binding
+from .commissioning import enabled_binding, reenable_problems, rotated_binding
 from .errors import StoreConflict
 from .model import SocialBinding
 from .tokens import MetaTokenEvidence
@@ -48,7 +53,23 @@ def token_fields(binding: SocialBinding, evidence: MetaTokenEvidence) -> dict[st
 
 @runtime_checkable
 class SocialBindingStore(Protocol):
+    async def register(self, binding: SocialBinding) -> bool: ...
+
     async def get(self, binding_id: str) -> SocialBinding | None: ...
+
+    async def find_account(self, platform: str, native_account_id: str) -> SocialBinding | None: ...
+
+    async def rotate(
+        self,
+        binding_id: str,
+        *,
+        expected_version: str,
+        credential_ref: str,
+        credential_version: str,
+        at: datetime,
+    ) -> SocialBinding: ...
+
+    async def reenable(self, binding_id: str, *, expected_version: str, now: datetime) -> SocialBinding: ...
 
     async def record_token_evidence(self, binding_id: str, evidence: MetaTokenEvidence) -> SocialBinding: ...
 
@@ -82,6 +103,49 @@ class InMemorySocialBindingStore:
 
     async def get(self, binding_id: str) -> SocialBinding | None:
         return self._bindings.get(binding_id)
+
+    async def find_account(self, platform: str, native_account_id: str) -> SocialBinding | None:
+        for binding in self._bindings.values():
+            if (binding.platform, binding.native_account_id) == (platform, native_account_id):
+                return binding
+        return None
+
+    async def rotate(
+        self,
+        binding_id: str,
+        *,
+        expected_version: str,
+        credential_ref: str,
+        credential_version: str,
+        at: datetime,
+    ) -> SocialBinding:
+        async with self._lock:
+            binding = self._bindings.get(binding_id)
+            if binding is None:
+                raise StoreConflict(f"binding {binding_id!r} is not registered")
+            updated = rotated_binding(
+                binding,
+                expected_version=expected_version,
+                credential_ref=credential_ref,
+                credential_version=credential_version,
+                at=at,
+            )
+            self._bindings[binding_id] = updated
+            return updated
+
+    async def reenable(self, binding_id: str, *, expected_version: str, now: datetime) -> SocialBinding:
+        async with self._lock:
+            binding = self._bindings.get(binding_id)
+            if binding is None:
+                raise StoreConflict(f"binding {binding_id!r} is not registered")
+            if binding.credential_version != expected_version:
+                raise StoreConflict(f"binding {binding_id!r} changed since it was checked; re-run the check")
+            problems = reenable_problems(binding, now=now)
+            if problems:
+                raise StoreConflict("; ".join(problems))
+            updated = binding.model_copy(update={"publish_enabled": True, "reenable_after_measure": False})
+            self._bindings[binding_id] = updated
+            return updated
 
     async def record_token_evidence(self, binding_id: str, evidence: MetaTokenEvidence) -> SocialBinding:
         async with self._lock:

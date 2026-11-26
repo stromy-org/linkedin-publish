@@ -118,6 +118,8 @@ class SocialBinding(_Strict):
     #: Held after a credential rotation (migration 0005's column): no grant is
     #: honoured and no capability is enabled until it is re-measured.
     reenable_after_measure: bool = False
+    #: When the credential was last rotated (migration 0005's column), if ever.
+    rotated_at: datetime | None = None
     capabilities: tuple[OperationCapability, ...] = ()
     publish_enabled: bool = False
 
