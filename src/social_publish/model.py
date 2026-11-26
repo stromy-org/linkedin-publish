@@ -111,8 +111,26 @@ class SocialBinding(_Strict):
     credential_version: str
     token_expires_at: datetime | None = None
     token_observed_at: datetime | None = None
+    #: Explicit no-expiry evidence (migration 0007): the last recorded Meta
+    #: `debug_token` for the current credential version reported `expires_at: 0`.
+    #: Never inferred from a missing expiry — absent evidence is `unknown`.
+    token_never_expires: bool = False
+    #: Held after a credential rotation (migration 0005's column): no grant is
+    #: honoured and no capability is enabled until it is re-measured.
+    reenable_after_measure: bool = False
     capabilities: tuple[OperationCapability, ...] = ()
     publish_enabled: bool = False
+
+    @model_validator(mode="after")
+    def _token_evidence(self) -> Self:
+        if self.token_never_expires:
+            if self.platform == "linkedin":
+                raise ValueError("no-expiry evidence is a Meta debug_token reading; LinkedIn tokens always expire")
+            if self.token_expires_at is not None:
+                raise ValueError("a token cannot both never expire and expire at a measured time")
+            if self.token_observed_at is None:
+                raise ValueError("no-expiry evidence needs the time it was observed")
+        return self
 
     @model_validator(mode="after")
     def _native_identity(self) -> Self:

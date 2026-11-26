@@ -228,6 +228,39 @@ uv run linkedin-publish publish due --binding <id> --publication <pub id> --acto
 uv run linkedin-publish account enable --binding <id> --capability text --evidence <pub id> --dsn "$WRITER_DSN"
 ```
 
+### The Meta canary (v0.9.0)
+
+The same route for a Meta binding, under `meta` (the LinkedIn verbs above are
+unchanged). A grant names one stored Meta publication, its digest, binding,
+`operation:format` and actor; it licenses that one send only while the pair is
+`unknown` — never an `unavailable` pair, a held binding or another format — and
+only `meta publish-due` (a dispatcher built with the commissioning actor; the
+scheduler never is) can spend it, at `sending`. `meta enable` enables exactly the
+receipt's pair, and only from a send this ledger made: `published`, or for a
+Facebook native schedule `scheduled` after its read-back. Every writing verb has
+a pre-flight, a confirmation and `--dry-run`; every refusal is named.
+
+```bash
+# Token evidence from Graph debug_token: a measured expiry, or explicit
+# no-expiry evidence (`expires_at: 0` on a valid token of the binding's app).
+# META_ACCESS_TOKEN / META_CREDENTIAL_VERSION come from the environment only.
+uv run linkedin-publish meta inspect --binding <id> --record --dsn "$WRITER_DSN"
+uv run linkedin-publish meta status --binding <id> --dsn "$READER_DSN"
+uv run linkedin-publish meta commission --publication <pub id> --digest <digest> --binding <id> \
+    --operation schedule_post --format text --actor <operator> --dsn "$WRITER_DSN"
+uv run linkedin-publish meta publish-due --binding <id> --publication <pub id> --actor <operator> \
+    --dsn "$COMMISSIONER_DSN"
+uv run linkedin-publish meta enable --binding <id> --operation schedule_post --format text \
+    --evidence <pub id> --dsn "$WRITER_DSN"
+```
+
+The operator CLI holds no media-signing authority, so a media canary
+(`feed_image`) is refused there by name (`media_unavailable`); it is sent by a
+host that builds `DispatchService(..., commissioning_actor=...)` with its own
+signed-URL issuer. A C3 operation is handed over with
+`social_publish.import_c3_handover(store, binding, doc, ...)`, where `doc` is
+`publish.py export-source`'s `social-ops-handover/1` document.
+
 ### Renewal (token rotation)
 
 A member token lives about 60 days. A re-minted token keeps its binding, its
@@ -325,6 +358,14 @@ additive for old readers (`REQUIRED_MIGRATION` stays `0002_roles`), and a
 failure rolls the whole file back to 0005. Upgrades from the v0.4.2 and v0.7.0
 shapes, a retry, old readers, Meta writers, role refusals and the rollback switch
 are exercised in `tests/integration/test_social_migration.py`.
+
+Migration **0007** (v0.9.0) adds `account_bindings.token_never_expires`, Meta's
+explicit no-expiry evidence, with a CHECK (Meta bindings only, never beside a
+measured expiry, never without its observation time), and grants the
+commissioner UPDATE on exactly `remote_id` and `container_id` so a commissioned
+Meta canary records its receipt. No other role changes. Upgrade from a populated
+0006 ledger, a failed 0007 rolling back whole, a retry, both readers and the
+canary under the real roles are in `tests/integration/test_meta_commissioning.py`.
 
 ## Releases
 

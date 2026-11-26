@@ -31,10 +31,28 @@ never turns work that may already exist at the provider into fresh work:
 | `handoff_open`, `handoff_recorded`                 | `handoff`    |
 | `published`, `cancelled`, `failed`                 | the same     |
 
-The source must be quiesced for the binding (the C3 publisher paused, so it
-cannot dispatch while ownership moves). A failed import writes nothing, so the
-C3 journal stays the one accountable sender; a successful one makes the ledger
-the owner. Importing the same approval again returns the existing row.
+The source must be quiesced for the binding: the operator runs
+`publish.py quiesce` (not `withdraw`, which cancels remotely), so the C3
+publisher imports, claims and sends nothing while ownership moves. A failed
+import writes nothing, so the C3 journal stays the one accountable sender; a
+successful one makes the ledger the owner, and the operator then records it on
+the C3 side with `publish.py transfer`. Importing the same approval again
+returns the existing row.
+
+**The hand-over document.** `publish.py export-source` prints one
+`social-ops-handover/1` document per operation: the approval `record`, its
+`later_records`, the `caption`, and `source` (exactly `ImportSource`).
+`import_c3_handover` checks the document against the record it carries — the
+version, the operation key, the approval digest and the binding — and then
+imports it through `import_c3_approval`. A `transferred` C3 state is never an
+import source: once transferred, the ledger already owns the operation.
+
+**The late window (Decision D24)** belongs to C3: a `graph_api_publish`
+approval defaults to expiring one hour after its slot
+(`_approval.API_PUBLISH_LATE_WINDOW`), so the ledger's dispatch window is
+`[slot, expiry)`. The ledger's own rule is unchanged and strict: an approval
+whose expiry is at or before its slot has no window and is refused
+(`approval_expired`).
 
 This module never touches the network and never holds a private key.
 """
@@ -56,12 +74,14 @@ from .states import SocialState
 
 __all__ = [
     "C3_ENVELOPE_VERSION",
+    "C3_HANDOVER_VERSION",
     "C3_RECORD_VERSION",
     "C3_TRUST_VERSION",
     "IG_API_ROUTE",
     "ImportSource",
     "TrustedKey",
     "import_c3_approval",
+    "import_c3_handover",
     "key_id_for",
     "load_trust",
     "verify_record",
@@ -70,6 +90,8 @@ __all__ = [
 C3_ENVELOPE_VERSION = "social-ops-approval/1"
 C3_RECORD_VERSION = "social-ops-approval-record/1"
 C3_TRUST_VERSION = "social-ops-trust/1"
+#: `publish.py export-source`'s hand-over document (comms-mcp social-ops `publishing.md` § 12).
+C3_HANDOVER_VERSION = "social-ops-handover/1"
 
 #: The route value an Instagram envelope must carry for the ledger to publish it
 #: through the API. C3 v1 approves Instagram for `human_handoff` only; such an
@@ -231,18 +253,29 @@ def verify_record(
 
 @dataclass(frozen=True)
 class ImportSource:
-    """The C3 journal's view of the operation, read under the paused publisher.
+    """The C3 journal's view of the operation, read under the quiesced publisher.
 
-    `quiesced` is the operator's statement, from the C3 journal, that the local
-    publisher for this binding is paused (`withdraw`/`pause`), so it cannot send
-    while ownership moves. `remote_id` and `container_id` carry what the C3
-    journal recorded for an operation that already reached Meta.
+    `quiesced` is the C3 journal's statement (from `publish.py export-source`)
+    that the binding was quiesced with `publish.py quiesce` and that no worker
+    still holds a live claim or send on any of its operations, so the local
+    publisher cannot send while ownership moves. `remote_id` and
+    `container_id` carry what the C3 journal recorded for an operation that
+    already reached Meta (C3 never creates an Instagram container, so the
+    latter is always None from C3).
     """
 
     quiesced: bool
     state: str | None = None
     remote_id: str | None = None
     container_id: str | None = None
+
+
+def _operation_key(envelope: dict[str, Any]) -> str:
+    target = envelope.get("target")
+    account = target.get("account_id") if isinstance(target, dict) else None
+    return "/".join(
+        (str(envelope.get("instance_id")), str(account), str(envelope.get("post_id")), str(envelope.get("operation")))
+    )
 
 
 def _payload_from(envelope: dict[str, Any], caption: str, binding: SocialBinding, source_state: str) -> MetaPayload:
@@ -338,14 +371,7 @@ async def import_c3_approval(
     if attestation["kind"] != "approve":
         raise ApprovalRefused("approval_revoked", "a revocation record is not an approval")
     envelope: dict[str, Any] = record["envelope"]
-    operation_key = "/".join(
-        (
-            str(envelope["instance_id"]),
-            str(envelope["target"]["account_id"]),
-            str(envelope["post_id"]),
-            str(envelope["operation"]),
-        )
-    )
+    operation_key = _operation_key(envelope)
     if attestation.get("operation_key") != operation_key:
         raise ApprovalRefused("approval_untrusted", "the attested operation key does not match the envelope")
     for other in later_records or []:
@@ -424,3 +450,83 @@ async def import_c3_approval(
         approved_at=approved_at,
     )
     return await store.import_intent(social, approval, actor=actor, at=moment)
+
+
+async def import_c3_handover(
+    store: SocialStore,
+    binding: SocialBinding,
+    doc: object,
+    *,
+    trust: dict[str, TrustedKey],
+    instance: dict[str, Any],
+    actor: str,
+    now: datetime | None = None,
+) -> ImportOutcome:
+    """Import one `publish.py export-source` document (`social-ops-handover/1`).
+
+    The document is checked against the approval record it carries, before any
+    signature work: its version, its `operation_key` (the record's derived C3
+    operation key, which becomes the ledger intent id), its `approval_sha256`
+    (the attestation's `envelope_sha256`), and its binding (the C3 binding the
+    envelope names, whose account is this ledger binding's account). Then
+    `record`, `caption`, `later_records` and `source` pass through unchanged to
+    `import_c3_approval`, which verifies origin, revocation and digest and
+    imports atomically. A refused hand-over writes nothing.
+    """
+    if not isinstance(doc, dict) or doc.get("export_version") != C3_HANDOVER_VERSION:
+        raise ApprovalRefused("handover_invalid", f"not a {C3_HANDOVER_VERSION} hand-over document")
+    handover: dict[str, Any] = doc
+    record = handover.get("record")
+    source = handover.get("source")
+    later = handover.get("later_records") or []
+    caption = handover.get("caption")
+    if (
+        not isinstance(record, dict)
+        or not isinstance(source, dict)
+        or not isinstance(later, list)
+        or not all(isinstance(item, dict) for item in later)
+    ):
+        raise ApprovalRefused("handover_invalid", "the document lacks its record, source or later_records")
+    if not isinstance(caption, str):
+        raise ApprovalRefused("handover_invalid", "the document carries no caption")
+    envelope = record.get("envelope")
+    attestation = record.get("attestation")
+    if not isinstance(envelope, dict) or not isinstance(attestation, dict):
+        raise ApprovalRefused("handover_invalid", "the record lacks an envelope or an attestation")
+    if handover.get("operation_key") != _operation_key(envelope):
+        raise ApprovalRefused(
+            "handover_mismatch", "the document's operation_key is not the record's derived operation key"
+        )
+    if handover.get("approval_sha256") != attestation.get("envelope_sha256"):
+        raise ApprovalRefused("handover_mismatch", "the document's approval_sha256 is not the attested envelope digest")
+    target = envelope.get("target")
+    account = target.get("account_id") if isinstance(target, dict) else None
+    if handover.get("binding_id") != envelope.get("binding_id") or account != binding.account_id:
+        raise ApprovalRefused(
+            "binding_mismatch",
+            f"the hand-over is for C3 binding {handover.get('binding_id')!r}; this ledger binding is account "
+            f"{binding.account_id!r}",
+        )
+    if handover.get("route") is not None and handover.get("route") != envelope.get("route"):
+        raise ApprovalRefused("handover_mismatch", "the document's route is not the approved route")
+    try:
+        import_source = ImportSource(
+            quiesced=source.get("quiesced") is True,
+            state=source.get("state"),
+            remote_id=source.get("remote_id"),
+            container_id=source.get("container_id"),
+        )
+    except TypeError as exc:  # pragma: no cover - the four keys are read explicitly
+        raise ApprovalRefused("handover_invalid", "the source is not an ImportSource") from exc
+    return await import_c3_approval(
+        store,
+        binding,
+        record=record,
+        caption=caption,
+        trust=trust,
+        instance=instance,
+        source=import_source,
+        later_records=list(later),
+        actor=actor,
+        now=now,
+    )
