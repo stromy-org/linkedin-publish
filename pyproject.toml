@@ -4,8 +4,8 @@ build-backend = "hatchling.build"
 
 [project]
 name = "linkedin-publish"
-version = "0.7.0"
-description = "Official LinkedIn publishing client and durable, approval-gated publication service"
+version = "0.8.0"
+description = "Official LinkedIn and Meta organic publishing through a durable, approval-gated publication service"
 readme = "README.md"
 requires-python = ">=3.12"
 license = "MIT"
@@ -29,7 +29,11 @@ azure = [
     # does not depend on: without it the first Entra login fails at runtime.
     "aiohttp>=3.9",
 ]
-all = ["linkedin-publish[postgres,azure]"]
+# Meta: verifying operator approvals (Ed25519) before they enter the ledger.
+meta = [
+    "cryptography>=42",
+]
+all = ["linkedin-publish[postgres,azure,meta]"]
 
 # PEP 735 dependency-groups — installed by default with `uv sync` (no --extra needed).
 [dependency-groups]

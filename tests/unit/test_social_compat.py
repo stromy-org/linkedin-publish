@@ -102,3 +102,10 @@ def test_a_meta_binding_never_carries_a_linkedin_urn() -> None:
         type(good).model_validate({**good.model_dump(), "author_urn": "urn:li:person:x"})
     with pytest.raises(ValidationError, match="numeric native_account_id"):
         type(good).model_validate({**good.model_dump(), "native_account_id": "urn:li:organization:1"})
+
+
+def test_both_namespaces_report_the_released_version() -> None:
+    import tomllib
+
+    pyproject = tomllib.loads((Path(__file__).parents[2] / "pyproject.toml").read_text())
+    assert linkedin_publish.__version__ == social_publish.__version__ == pyproject["project"]["version"]
