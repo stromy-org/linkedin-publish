@@ -1,18 +1,63 @@
-# LinkedIn Publish
+# LinkedIn Publish (`social_publish`)
 
-Official-API LinkedIn publishing for Stromy: a small HTTP client, and a durable,
-approval-gated publication ledger on top of it.
+Official-API LinkedIn and Meta organic publishing for Stromy: small HTTP
+clients, and a durable, approval-gated publication ledger on top of them.
 
 Client-neutral by construction. Nothing here reads `client-data`, resolves a
 `client_slug`, parses an Entra claim, or knows what a brand is. It takes resolved
 data and opaque trusted subjects; brand knowledge lives in the L3 skills and
 credential resolution in the hosted MCP.
 
-**Status: engineering-complete for C0 + C2 of ORG-PLAN-285 — 209 tests green,
-including the durable tier against a real Postgres; no capability is
-commissioned.** Every binding ships `publish_enabled=false` with every capability
+**Status: engineering-complete for C0 + C2 of ORG-PLAN-285 and the library half
+of ORG-PLAN-652 C5a — 492 tests green, including the durable tier against a real
+Postgres; no capability is commissioned.** Every binding ships `publish_enabled=false` with every capability
 `unknown`, so this library refuses to publish until a recorded canary receipt
 says otherwise. It has never been run against LinkedIn.
+
+## `social_publish`: the platform-neutral core (v0.8.0)
+
+Since v0.8.0 the wheel carries a second, **canonical** import namespace,
+`social_publish` (ORG-PLAN-652 C5a). The distribution is still
+`linkedin-publish`, and every public `linkedin_publish` import, CLI command,
+serialized LinkedIn payload and digest is unchanged — the v0.7.0 digests are
+pinned in `tests/unit/test_social_compat.py`. The rename of the distribution is
+a later, separate release (C5b).
+
+| The core owns | An adapter owns |
+|---|---|
+| immutable intent and its digest, scoped approval, scheduling windows, claims, attempt state, receipts, reconciliation | native ids, credentials, format and visibility rules, media staging, rate-limit interpretation, provider read-back |
+
+```python
+from social_publish import DispatchService, MetaGraphAdapter, import_c3_approval
+from social_publish.linkedin import LinkedInClient, PublicationService  # the same objects as linkedin_publish
+```
+
+- **Capability per account, operation and format.** A Meta binding enables, for
+  example, `(schedule_post, text)` and nothing else. The core refuses any other
+  pair before transport, and never sends a record as a "nearby" format.
+- **No fallback adapter.** The adapter comes from the trusted binding. After an
+  uncertain response the record is `unknown`, reconciled read-only by the same
+  adapter, and never sent again — by that adapter or any other.
+- **Meta adapter, pinned to Graph v27.0** (the version the operator publisher
+  uses): Facebook Page scheduled posts (`text`, `link`, `feed_image`) with
+  read-back from `scheduled_posts` and cancel-then-verify; Instagram
+  `feed_image` through the container lifecycle (`IN_PROGRESS`, `FINISHED`,
+  `PUBLISHED`, `ERROR`, `EXPIRED`), with the container id persisted before
+  `media_publish` and a lost publish answer re-queried on the same container,
+  `unknown` until resolved, across restarts; comment replies with a live parent
+  check. Carousels, reels and stories are not implemented and are refused.
+- **Trusted approval import.** `import_c3_approval` verifies a
+  `social-ops-approval/1` record (Ed25519 signature by a trusted key, actor,
+  revocation, grant, caption digest, account) and imports the original intent id
+  with its dispatch state in one transaction. A remote schedule, a human handoff,
+  or a sent or unknown attempt never becomes fresh work; importing the same
+  approval twice returns the same row. The C3 publisher must be paused for the
+  binding first (`source_not_quiesced` otherwise).
+- **Rollback switch:** `PostgresSocialBindingStore.disable_platform(...)` turns
+  Meta publishing off. Ticks still expire, recover leases, read back schedules
+  and reconcile unknowns; they send nothing.
+
+Install the `meta` extra (`cryptography`) to verify approvals.
 
 ## The one guarantee
 
@@ -32,6 +77,7 @@ actual post, with `linkedin-publish publication reconcile --publication <id>
 ```bash
 uv sync                    # client only
 uv sync --extra postgres   # + the durable ledger
+uv sync --extra meta       # + approval verification for the Meta path
 ```
 
 ## Two layers
@@ -170,8 +216,9 @@ uv run linkedin-publish account commission --publication <pub id> --digest <dige
 #    in the environment (LINKEDIN_CREDENTIAL_VERSION must be the binding's).
 #    Shows the binding, capability and grant, then asks. Exit 0 published,
 #    1 refused, 3 outcome unknown: look at LinkedIn, then `publication reconcile`.
-#    The DSN's role must run the send transitions and quota counters (the
-#    runtime role's grants, or the schema owner); the writer role alone cannot.
+#    The DSN's role is linkedin_publish_commissioner (migration 0006): it runs the
+#    send transitions, spends the grant and the quota, and nothing else. The
+#    writer role alone cannot send; the runtime role can no longer spend a grant.
 uv run linkedin-publish publish due --binding <id> --publication <pub id> --actor <you> --dsn "$LEDGER_DSN"
 
 # 7. Enable from the receipt: refused unless <pub id> is `published` on this
@@ -264,6 +311,20 @@ commissioning grants, and records the operator's outcome for an `unknown` send
 (outcome columns only — migration 0003). `approval record`, `account commission`
 and `publication reconcile` all read the publication from the ledger, show it,
 and write only after an interactive confirmation.
+
+Migration **0006** (v0.8.0) admits Meta bindings and rows without loosening the
+LinkedIn rules: `account_bindings.platform` and `native_account_id` (a numeric
+Page or Instagram user id, and no `author_urn` — no LinkedIn URN is ever
+invented for Meta), `publications.platform` tied to its binding by a composite
+foreign key, Meta locators in `remote_id` and `container_id` (a LinkedIn row
+keeps `post_urn` and may hold neither), the Meta-only states `scheduled` and
+`handoff`, and `intent_id` with at most one live row per intent. It adds
+`linkedin_publish_commissioner`, the narrow role `publish due` connects as, and
+revokes the runtime role's `consumed_at` grant on `commissioning_grants`. It is
+additive for old readers (`REQUIRED_MIGRATION` stays `0002_roles`), and a
+failure rolls the whole file back to 0005. Upgrades from the v0.4.2 and v0.7.0
+shapes, a retry, old readers, Meta writers, role refusals and the rollback switch
+are exercised in `tests/integration/test_social_migration.py`.
 
 ## Releases
 
