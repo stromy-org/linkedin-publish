@@ -67,10 +67,12 @@ def test_both_namespaces_share_one_canonical_encoding() -> None:
     assert social_publish.canonical_json({"b": "é", "a": 1}) == '{"a":1,"b":"é"}'.encode()
 
 
-def test_the_linkedin_transition_table_is_the_v070_table() -> None:
+def test_the_linkedin_transition_table_is_the_v070_table_plus_the_removed_disposition() -> None:
+    """v0.7.0's table, with exactly one addition: a `published` post may be recorded `removed`."""
     from linkedin_publish.store import allowed_transitions
 
-    assert {state: set(allowed_transitions(state)) for state in V070_TRANSITIONS} == V070_TRANSITIONS  # type: ignore[arg-type]
+    expected = {**V070_TRANSITIONS, "published": {"removed"}, "removed": set()}
+    assert {state: set(allowed_transitions(state)) for state in expected} == expected  # type: ignore[arg-type]
 
 
 def test_store_conflict_and_the_sanitizer_are_one_object_in_both_namespaces() -> None:

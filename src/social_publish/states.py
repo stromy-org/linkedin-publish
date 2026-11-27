@@ -45,11 +45,12 @@ SocialState = Literal[
     "unknown",
     "expired",
     "cancelled",
+    "removed",
 ]
 
 #: The states a LinkedIn publication may hold (migration 0001's CHECK, unchanged).
 LINKEDIN_STATES: frozenset[str] = frozenset(
-    {"pending", "claimed", "sending", "published", "failed", "unknown", "expired", "cancelled"}
+    {"pending", "claimed", "sending", "published", "failed", "unknown", "expired", "cancelled", "removed"}
 )
 
 TRANSITIONS: dict[str, frozenset[str]] = {
@@ -63,10 +64,14 @@ TRANSITIONS: dict[str, frozenset[str]] = {
     "scheduled": frozenset({"published", "cancelled", "unknown"}),
     "handoff": frozenset({"published", "cancelled", "unknown"}),
     "unknown": frozenset({"published", "scheduled", "failed"}),
-    "published": frozenset(),
+    # `removed` is reached only by the operator disposition `publication
+    # record-removed` (the post was deleted outside the rail); no tick, adapter or
+    # reconcile ever targets it.
+    "published": frozenset({"removed"}),
     "failed": frozenset(),
     "expired": frozenset(),
     "cancelled": frozenset(),
+    "removed": frozenset(),
 }
 
 #: The LinkedIn table, exactly as `linkedin_publish.store` has always declared it.
@@ -75,15 +80,19 @@ LINKEDIN_TRANSITIONS: dict[str, frozenset[str]] = {
     "claimed": frozenset({"pending", "sending", "cancelled"}),
     "sending": frozenset({"published", "pending", "failed", "unknown"}),
     "unknown": frozenset({"published", "failed"}),
-    "published": frozenset(),
+    # `removed` is reached only by the operator disposition `publication
+    # record-removed` (the post was deleted outside the rail); no tick, adapter or
+    # reconcile ever targets it.
+    "published": frozenset({"removed"}),
     "failed": frozenset(),
     "expired": frozenset(),
     "cancelled": frozenset(),
+    "removed": frozenset(),
 }
 
 #: States an import or a tick may never turn into fresh work: something may
 #: already exist at the provider, or a human holds it.
-NEVER_FRESH: frozenset[str] = frozenset({"sending", "scheduled", "handoff", "published", "unknown"})
+NEVER_FRESH: frozenset[str] = frozenset({"sending", "scheduled", "handoff", "published", "unknown", "removed"})
 
 
 def allowed(current: str, target: str, *, table: dict[str, frozenset[str]] | None = None) -> bool:

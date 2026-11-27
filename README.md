@@ -72,6 +72,13 @@ process, not a token rotation, not a re-import. A human reconciles it against th
 actual post, with `linkedin-publish publication reconcile --publication <id>
 --actor <you> (--post-urn <urn> | --failure-reason "<what you found>")`.
 
+A `published` post that its owner later deletes on LinkedIn is recorded with
+`linkedin-publish publication record-removed --publication <id> --actor <you>
+--reason "<how you know>"` (migration 0008). Ledger only, never a provider call:
+the row becomes the terminal `removed`, its receipt stays, who/when/why is a
+`removed_externally` event, and the post no longer counts as `account enable
+--evidence`.
+
 ## Install
 
 ```bash

@@ -50,10 +50,13 @@ PublicationState = Literal[
     "unknown",
     "expired",
     "cancelled",
+    "removed",
 ]
 
 #: States from which no automated transition may ever send again.
-TERMINAL_OR_HELD: frozenset[str] = frozenset({"published", "failed", "unknown", "expired", "cancelled"})
+TERMINAL_OR_HELD: frozenset[str] = frozenset(
+    {"published", "failed", "unknown", "expired", "cancelled", "removed"}
+)
 
 #: The transition table has one owner, `social_publish.states`; a LinkedIn row
 #: uses its restriction to the eight LinkedIn states (identical to the table
