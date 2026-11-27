@@ -212,7 +212,12 @@ def enable_problems(
     else:
         if evidence.binding_id != binding.binding_id:
             problems.append(f"the evidence publication belongs to binding {evidence.binding_id}, not this one")
-        if evidence.state != "published" or not evidence.post_urn:
+        if evidence.state == "removed":
+            problems.append(
+                "the evidence publication was removed outside the rail (state removed); "
+                "a deleted post never enables a capability"
+            )
+        elif evidence.state != "published" or not evidence.post_urn:
             problems.append(
                 f"the evidence publication has no published receipt (state {evidence.state}); "
                 "an unknown send is reconciled first, never enabled from"

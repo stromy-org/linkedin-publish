@@ -709,6 +709,59 @@ class PublicationService:
         )
 
 
+async def record_publication_removed(
+    store: PublicationStore,
+    publication_id: str,
+    *,
+    actor: str,
+    reason: str,
+    now: datetime | None = None,
+) -> PublicationRecord:
+    """Record that a `published` post was deleted outside the rail.
+
+    A ledger-only disposition: it never calls LinkedIn and trusts the operator's
+    word that the post is gone. The row moves `published` -> `removed` (terminal);
+    `post_urn`, `permalink` and `published_at` are left exactly as the receipt
+    wrote them, and who/when/why is a `removed_externally` event. A removed post
+    is no longer `published`, so `account enable --evidence` refuses it.
+
+    Only `published` records qualify; every other state either has no receipt to
+    withdraw or is reconciled, cancelled or failed by its own route.
+    """
+    if not (actor or "").strip():
+        raise ValidationFailure("record-removed requires an actor")
+    if not (reason or "").strip():
+        raise ValidationFailure("record-removed requires a reason saying how the post was removed")
+    moment = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    record = await store.get_publication(publication_id)
+    if record is None:
+        raise ValidationFailure(f"unknown publication {publication_id}")
+    if record.state != "published":
+        raise ValidationFailure(
+            f"publication {publication_id} is {record.state}; only published records are recorded as removed"
+        )
+    updated = await store.compare_and_set(
+        publication_id,
+        expected_state="published",
+        expected_attempt_token=None,
+        updates={"state": "removed"},
+    )
+    await store.append_event(
+        PublicationEvent(
+            publication_id=publication_id,
+            at=moment,
+            kind="removed_externally",
+            actor=actor,
+            detail={
+                "reason": reason,
+                "post_urn": record.post_urn,
+                "published_at": record.published_at.isoformat() if record.published_at else None,
+            },
+        )
+    )
+    return updated
+
+
 async def reconcile_publication(
     store: PublicationStore,
     publication_id: str,

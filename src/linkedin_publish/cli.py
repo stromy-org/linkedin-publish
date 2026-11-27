@@ -21,6 +21,9 @@ negotiable:
 * `publication reconcile` records what the operator found on LinkedIn for an
   `unknown` send — the post URN, or a failure reason. Nothing else moves an
   `unknown` record, by design.
+* `publication record-removed` records that a `published` post was deleted on
+  LinkedIn outside the rail: terminal `removed`, receipt kept, never a provider
+  call, and the post stops counting as `account enable --evidence`.
 
 `account register` and `account inspect` never take a credential as an
 argument: registration stores a reference and a version, and inspection reads
@@ -1260,6 +1263,57 @@ def publication_reconcile(
         click.echo(f"ABORT: {exc}", err=True)
         sys.exit(1)
     click.echo(f"reconciled {publication_id}: {updated.state}")
+
+
+@publication.command("record-removed")
+@click.option("--publication", "publication_id", required=True)
+@click.option("--actor", required=True, help="The operator identity recording the disposition.")
+@click.option("--reason", required=True, help="How you know the post is gone (for example: deleted by the owner).")
+@click.option("--dsn", envvar="LINKEDIN_PUBLISH_DSN", required=True, help="Writer-role DSN.")
+def publication_record_removed(publication_id: str, actor: str, reason: str, dsn: str) -> None:
+    """Record that a published post was deleted outside the rail.
+
+    Ledger only: LinkedIn is never called. The `published` row becomes the
+    terminal `removed`, its receipt (post URN, published_at) stays, and the
+    actor, time and reason are written as an event. A removed post can no longer
+    be offered as `account enable --evidence`. Needs schema migration 0008.
+    """
+    from .errors import ValidationFailure
+    from .service import record_publication_removed
+
+    if not actor.strip() or not reason.strip():
+        click.echo("ABORT: --actor and --reason must not be empty.", err=True)
+        sys.exit(2)
+
+    record = asyncio.run(_load_publication(dsn, publication_id))
+    _show_stored(record)
+    if record.state != "published":
+        click.echo(
+            f"ABORT: {publication_id} is {record.state}; only published records are recorded as removed.", err=True
+        )
+        sys.exit(1)
+
+    click.confirm(f"Record {publication_id} ({record.post_urn}) as removed: {reason}?", abort=True)
+
+    async def write() -> PublicationRecord:
+        async with _publication_store(dsn) as store:
+            return await record_publication_removed(store, publication_id, actor=actor, reason=reason)
+
+    try:
+        updated = asyncio.run(write())
+    except ValidationFailure as exc:
+        click.echo(f"ABORT: {exc}", err=True)
+        sys.exit(1)
+    except Exception as exc:  # noqa: BLE001 - narrowed to the one expected driver error below
+        if type(exc).__name__ == "CheckViolationError":
+            click.echo(
+                "ABORT: the ledger rejected the state; apply migration 0008_publication_removed "
+                "(`linkedin-publish db migrate`) first.",
+                err=True,
+            )
+            sys.exit(1)
+        raise
+    click.echo(f"recorded {publication_id}: {updated.state} (receipt {updated.post_urn} kept)")
 
 
 # ---------------------------------------------------------------------- db

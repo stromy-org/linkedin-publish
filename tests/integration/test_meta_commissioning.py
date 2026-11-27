@@ -37,14 +37,16 @@ ACTOR = "fixture-operator"
 
 #: sha256 of 0006 as shipped in v0.8.0 (81d0aee): an applied migration is immutable.
 PINNED_0006 = "50607fb02e9a6ed401719a857480c3379c4e1461c5c6dfec26c645be833fdcc4"
+#: sha256 of 0007 as shipped in v0.10.0.
+PINNED_0007 = "de881892191d78203542f945c78bf73fd1533ac3f4203814d467b7e7e972d556"
 
 
-def test_0006_is_unchanged_and_0007_ships() -> None:
+def test_0006_and_0007_are_unchanged() -> None:
     from linkedin_publish.postgres import migration_files
 
     shipped = {p.stem: hashlib.sha256(p.read_bytes()).hexdigest() for p in migration_files()}
     assert shipped[SOCIAL] == PINNED_0006
-    assert max(shipped) == META
+    assert shipped[META] == PINNED_0007
 
 
 def evidence(*, never: bool = True, version: str = "v1"):  # noqa: ANN201
@@ -76,7 +78,7 @@ async def test_a_populated_0006_ledger_upgrades_and_both_readers_still_read_it(p
         with pytest.raises(StoreConflict, match=META):  # and nothing writes evidence below 0007
             await PostgresSocialBindingStore(db).record_token_evidence("bind-fb", evidence())
 
-        assert await pg.apply_migrations(target, applied_by="pytest") == [META]
+        assert await pg.apply_migrations(target, applied_by="pytest") == [META, "0008_publication_removed"]
 
         await assert_linkedin_intact(db, before)  # the LinkedIn reader, unchanged
         upgraded = await PostgresSocialBindingStore(db).get("bind-fb")
@@ -121,7 +123,7 @@ async def test_a_failed_0007_rolls_back_whole_and_a_retry_applies(pool, monkeypa
         assert granted is False  # the grant rolled back with the rest
 
         monkeypatch.setattr(pg, "migration_files", lambda: real)
-        assert await pg.apply_migrations(target, applied_by="pytest") == [META]
+        assert await pg.apply_migrations(target, applied_by="pytest") == [META, "0008_publication_removed"]
         assert await db.fetchval(
             "SELECT has_column_privilege('linkedin_publish_commissioner', 'linkedin_publish.publications', "
             "'container_id', 'UPDATE')"
