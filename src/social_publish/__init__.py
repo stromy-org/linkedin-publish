@@ -98,7 +98,7 @@ from .rights import normalize_rights_evidence, require_rights, rights_evidence_o
 from .states import NEVER_FRESH, TRANSITIONS, SocialState
 from .tokens import MetaTokenEvidence, inspect_meta_token, meta_token_status, parse_debug_token
 
-__version__ = "0.10.0"
+__version__ = "0.11.0"
 
 __all__ = [
     "C3_HANDOVER_VERSION",
